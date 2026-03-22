@@ -1,6 +1,8 @@
 use crate::types::SystemContext;
 use colored::Colorize;
+use std::net::TcpStream;
 use std::process::Command;
+use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
 /// What kind of fix we're benchmarking, determines which benchmark to run.
@@ -122,6 +124,54 @@ pub fn run_all(frankenphp_bin: &str, app_path: &str, ctx: &SystemContext) {
             println!(
                 "      {}",
                 "Could not run PHP benchmark (is FrankenPHP available?)".yellow()
+            );
+        }
+    }
+    println!();
+
+    // HTTP load test
+    println!("    {}", "HTTP Load Test".bold());
+    println!(
+        "    {}",
+        "Detecting FrankenPHP server...".dimmed()
+    );
+
+    match detect_http_port() {
+        Some((host, port, is_https)) => {
+            let scheme = if is_https { "https" } else { "http" };
+            println!(
+                "    {}",
+                format!("Found server at {scheme}://{host}:{port}").dimmed()
+            );
+            println!(
+                "    {}",
+                "Running load test (100 requests, 10 concurrent)...".dimmed()
+            );
+            println!();
+
+            match run_http_load_test(&host, port, is_https, 100, 10) {
+                Some(result) => {
+                    for m in &result.metrics {
+                        if m.value_ms > 0.0 {
+                            println!("      {:<28} {:>8.1}ms", m.label, m.value_ms);
+                        } else {
+                            println!("      {}", m.label);
+                        }
+                    }
+                }
+                None => {
+                    println!(
+                        "      {}",
+                        "Could not complete HTTP load test".yellow()
+                    );
+                }
+            }
+        }
+        None => {
+            println!(
+                "      {}",
+                "No running FrankenPHP server detected (tried ports 443, 8000, 8443, 80)"
+                    .yellow()
             );
         }
     }
@@ -357,6 +407,223 @@ fn php_eval_float(frankenphp_bin: &str, code: &str) -> Option<f64> {
         .ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     stdout.parse::<f64>().ok()
+}
+
+/// Detect the port FrankenPHP is listening on.
+/// Tries common ports and checks for HTTP response.
+fn detect_http_port() -> Option<(String, u16, bool)> {
+    // Check admin API first for server name / listen address
+    if let Some(port) = detect_port_from_admin_api() {
+        return Some(("127.0.0.1".to_string(), port, port == 443 || port == 8443));
+    }
+
+    // Try common ports
+    let candidates = [(443, true), (8000, false), (8443, true), (80, false)];
+
+    for (port, is_https) in candidates {
+        if TcpStream::connect_timeout(
+            &format!("127.0.0.1:{port}").parse().unwrap(),
+            Duration::from_millis(200),
+        )
+        .is_ok()
+        {
+            return Some(("127.0.0.1".to_string(), port, is_https));
+        }
+    }
+
+    None
+}
+
+/// Try to detect the HTTP port from the Caddy admin API.
+fn detect_port_from_admin_api() -> Option<u16> {
+    let output = Command::new("curl")
+        .args([
+            "-s",
+            "--connect-timeout",
+            "1",
+            "--max-time",
+            "2",
+            "http://localhost:2019/config/apps/http/servers",
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let body = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&body).ok()?;
+
+    // Look for listen addresses in any server
+    for (_name, server) in json.as_object()? {
+        if let Some(listen) = server.get("listen").and_then(|l| l.as_array()) {
+            for addr in listen {
+                if let Some(addr_str) = addr.as_str() {
+                    // Format is typically ":443" or ":8000"
+                    if let Some(port_str) = addr_str.strip_prefix(':') {
+                        if let Ok(port) = port_str.parse::<u16>() {
+                            return Some(port);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Run an HTTP load test against the FrankenPHP server.
+///
+/// Uses curl for HTTPS support (TLS is complex with raw sockets).
+/// Sends `total_requests` across `concurrency` threads.
+fn run_http_load_test(
+    host: &str,
+    port: u16,
+    is_https: bool,
+    total_requests: u32,
+    concurrency: u32,
+) -> Option<BenchmarkResult> {
+    let scheme = if is_https { "https" } else { "http" };
+    let url = format!("{scheme}://{host}:{port}/up");
+
+    // Warm up: single request to ensure we get a valid response
+    let warmup = Command::new("curl")
+        .args(["-sk", "--connect-timeout", "3", "--max-time", "5", "-o", "/dev/null", "-w", "%{http_code}", &url])
+        .output()
+        .ok()?;
+
+    let status = String::from_utf8_lossy(&warmup.stdout).trim().to_string();
+    if !warmup.status.success() || (!status.starts_with('2') && !status.starts_with('3')) {
+        // Try root path instead
+        let url_root = format!("{scheme}://{host}:{port}/");
+        let warmup2 = Command::new("curl")
+            .args(["-sk", "--connect-timeout", "3", "--max-time", "5", "-o", "/dev/null", "-w", "%{http_code}", &url_root])
+            .output()
+            .ok()?;
+
+        let status2 = String::from_utf8_lossy(&warmup2.stdout).trim().to_string();
+        if !warmup2.status.success() || (!status2.starts_with('2') && !status2.starts_with('3')) {
+            return None;
+        }
+
+        return run_http_load_test_inner(&url_root, total_requests, concurrency);
+    }
+
+    run_http_load_test_inner(&url, total_requests, concurrency)
+}
+
+fn run_http_load_test_inner(
+    url: &str,
+    total_requests: u32,
+    concurrency: u32,
+) -> Option<BenchmarkResult> {
+    let requests_per_thread = total_requests / concurrency;
+    let url = Arc::new(url.to_string());
+    let barrier = Arc::new(Barrier::new(concurrency as usize));
+
+    let start = Instant::now();
+
+    let handles: Vec<_> = (0..concurrency)
+        .map(|_| {
+            let url = Arc::clone(&url);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let mut latencies = Vec::with_capacity(requests_per_thread as usize);
+                let mut errors = 0u32;
+
+                barrier.wait(); // Synchronize start
+
+                for _ in 0..requests_per_thread {
+                    let req_start = Instant::now();
+                    let result = Command::new("curl")
+                        .args([
+                            "-sk",
+                            "--connect-timeout",
+                            "3",
+                            "--max-time",
+                            "10",
+                            "-o",
+                            "/dev/null",
+                            "-w",
+                            "%{http_code}",
+                            &url,
+                        ])
+                        .output();
+
+                    let elapsed = req_start.elapsed();
+
+                    match result {
+                        Ok(out) if out.status.success() => {
+                            latencies.push(elapsed);
+                        }
+                        _ => {
+                            errors += 1;
+                        }
+                    }
+                }
+
+                (latencies, errors)
+            })
+        })
+        .collect();
+
+    let mut all_latencies = Vec::new();
+    let mut total_errors = 0u32;
+
+    for h in handles {
+        if let Ok((latencies, errors)) = h.join() {
+            all_latencies.extend(latencies);
+            total_errors += errors;
+        }
+    }
+
+    let total_time = start.elapsed();
+
+    if all_latencies.is_empty() {
+        return None;
+    }
+
+    all_latencies.sort();
+
+    let successful = all_latencies.len() as f64;
+    let rps = successful / total_time.as_secs_f64();
+    let avg_latency = avg_ms(&all_latencies);
+    let p50 = all_latencies[all_latencies.len() / 2].as_secs_f64() * 1000.0;
+    let p99_idx = ((all_latencies.len() as f64) * 0.99) as usize;
+    let p99 = all_latencies[p99_idx.min(all_latencies.len() - 1)].as_secs_f64() * 1000.0;
+
+    let mut metrics = vec![
+        Metric {
+            label: format!("Requests/sec: {rps:.1} ({concurrency}c)"),
+            value_ms: 0.0,
+        },
+        Metric {
+            label: "Avg latency".to_string(),
+            value_ms: avg_latency,
+        },
+        Metric {
+            label: "P50 latency".to_string(),
+            value_ms: p50,
+        },
+        Metric {
+            label: "P99 latency".to_string(),
+            value_ms: p99,
+        },
+    ];
+
+    if total_errors > 0 {
+        metrics.push(Metric {
+            label: format!("Errors: {total_errors}/{total_requests}"),
+            value_ms: 0.0,
+        });
+    }
+
+    Some(BenchmarkResult {
+        kind: "HTTP Load Test",
+        metrics,
+    })
 }
 
 fn avg_ms(durations: &[Duration]) -> f64 {
