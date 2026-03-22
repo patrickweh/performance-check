@@ -386,6 +386,15 @@ fn write_fixes(file: &str, entries: &[(&CheckResult, &str)]) -> Result<usize, st
     let mut content = fs::read_to_string(file).unwrap_or_default();
     let mut applied = 0;
 
+    // MySQL .cnf files need a [mysqld] section header for settings to be recognized
+    let is_mysql_cnf = file.ends_with(".cnf") && (file.contains("mysql") || file.contains("mariadb"));
+    if is_mysql_cnf && !content.contains("[mysqld]") {
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        content.push_str("[mysqld]\n");
+    }
+
     for (_r, fix_line) in entries {
         for line in fix_line.lines() {
             if let Some((key, _value)) = line.split_once('=') {
