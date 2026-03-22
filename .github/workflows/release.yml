@@ -61,7 +61,7 @@ jobs:
         uses: actions/download-artifact@v4
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v4
         with:
           files: |
             frankenphp-check-linux-amd64/frankenphp-check-linux-amd64
