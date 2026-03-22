@@ -474,12 +474,16 @@ fn run_http_load_test_url(
 
     for url in &candidates {
         if let Some(status) = curl_status_code(url, false) {
-            if status.starts_with('2') || status.starts_with('3') {
+            if status.starts_with('2') {
                 return run_http_load_test_inner(url, total_requests, concurrency);
             }
-        }
-        if let Some(status) = curl_status_code(url, true) {
-            if status.starts_with('2') || status.starts_with('3') {
+            // Resolve redirect to benchmark the final URL directly,
+            // avoiding double-request overhead (302 + target).
+            if status.starts_with('3') {
+                if let Some(resolved) = curl_resolve_redirect(url) {
+                    return run_http_load_test_inner(&resolved, total_requests, concurrency);
+                }
+                // Fallback: let curl follow redirects during benchmark
                 return run_http_load_test_inner(url, total_requests, concurrency);
             }
         }
@@ -595,6 +599,35 @@ fn detect_port_from_admin_api(octane_ports: &OctanePorts) -> Option<u16> {
     }
 
     None
+}
+
+/// Follow redirects and return the final URL.
+/// Returns `None` if the URL is not a redirect or curl fails.
+fn curl_resolve_redirect(url: &str) -> Option<String> {
+    let output = Command::new("curl")
+        .args([
+            "-skL",
+            "--connect-timeout",
+            "2",
+            "--max-time",
+            "3",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{url_effective}",
+            url,
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+    let effective = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if effective.is_empty() || effective == url {
+        return None;
+    }
+    Some(effective)
 }
 
 /// Probe a URL with curl and return the HTTP status code.
