@@ -190,16 +190,17 @@ fn run_php_benchmark(
 }
 
 fn run_mysql_benchmark(iterations: u32) -> Option<BenchmarkResult> {
-    let select = measure_mysql_query("SELECT BENCHMARK(100000, MD5('benchmark'))", iterations)?;
+    let select =
+        measure_mysql_server_time("SELECT BENCHMARK(100000, MD5('benchmark'))", iterations)?;
 
-    let write = measure_mysql_query("DO BENCHMARK(100000, CRC32('benchmark'))", iterations);
+    let compute = measure_mysql_server_time("DO BENCHMARK(100000, CRC32('benchmark'))", iterations);
 
     let mut metrics = vec![Metric {
         label: "SELECT throughput".to_string(),
         value_ms: select,
     }];
 
-    if let Some(w) = write {
+    if let Some(w) = compute {
         metrics.push(Metric {
             label: "Compute throughput".to_string(),
             value_ms: w,
@@ -266,37 +267,59 @@ fn measure_php_throughput(frankenphp_bin: &str, iterations: u32) -> f64 {
     avg_ms(&times)
 }
 
-fn measure_mysql_query(query: &str, iterations: u32) -> Option<f64> {
-    let mut times = Vec::new();
-
-    for _ in 0..iterations {
-        let start = Instant::now();
-        let output = Command::new("mysql")
-            .args([
-                "--defaults-file=/etc/mysql/debian.cnf",
-                "-N",
-                "-B",
-                "-e",
-                query,
-            ])
-            .output()
-            .or_else(|_| {
-                Command::new("mysql")
-                    .args(["-u", "root", "-N", "-B", "-e", query])
-                    .output()
-            })
-            .ok()?;
-
-        if output.status.success() {
-            times.push(start.elapsed());
-        }
+/// Measure query execution time server-side using a single mysql process.
+/// Runs all iterations in one SQL batch, avoiding fork/exec overhead per iteration.
+/// Returns the average time in milliseconds as measured by the MySQL server.
+fn measure_mysql_server_time(query: &str, iterations: u32) -> Option<f64> {
+    // Build a SQL batch that runs the query N times and reports each timing.
+    // Uses MySQL's microsecond timer for accurate measurement.
+    let mut sql = String::new();
+    for i in 0..iterations {
+        sql.push_str(&format!(
+            "SET @t{i} = UNIX_TIMESTAMP(NOW(6));\n\
+             {query};\n\
+             SET @d{i} = (UNIX_TIMESTAMP(NOW(6)) - @t{i}) * 1000;\n"
+        ));
     }
+
+    // Collect all timings in one SELECT
+    let selects: Vec<String> = (0..iterations).map(|i| format!("@d{i}")).collect();
+    sql.push_str(&format!("SELECT {};\n", selects.join(", ")));
+
+    let output = Command::new("mysql")
+        .args([
+            "--defaults-file=/etc/mysql/debian.cnf",
+            "-N",
+            "-B",
+            "-e",
+            &sql,
+        ])
+        .output()
+        .or_else(|_| {
+            Command::new("mysql")
+                .args(["-u", "root", "-N", "-B", "-e", &sql])
+                .output()
+        })
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    // The last line of output contains tab-separated timing values in ms
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let last_line = stdout.lines().last()?;
+    let times: Vec<f64> = last_line
+        .split('\t')
+        .filter_map(|v| v.trim().parse::<f64>().ok())
+        .collect();
 
     if times.is_empty() {
         return None;
     }
 
-    Some(avg_ms(&times))
+    let avg = times.iter().sum::<f64>() / times.len() as f64;
+    Some(avg)
 }
 
 fn get_buffer_pool_hit_rate() -> Option<f64> {

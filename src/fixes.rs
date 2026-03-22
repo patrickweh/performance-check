@@ -888,7 +888,6 @@ pub fn propose_full_benchmark_fixes(
                         backups.len()
                     )
                     .green()
-                    .to_string()
                 );
             }
             mysql_runtime_backups.extend(backups);
