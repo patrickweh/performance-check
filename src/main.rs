@@ -1,3 +1,4 @@
+mod benchmark;
 mod checks;
 mod discover;
 mod fixes;
@@ -101,7 +102,7 @@ fn main() {
 
         // Interactive fixes
         if cli.fix && !cli.json {
-            fixes::propose_interactive_fixes(&all_results);
+            fixes::propose_interactive_fixes(&all_results, &cli.frankenphp, app_path);
         }
 
         if all_results.iter().any(|r| r.status == types::Status::Fail) {
