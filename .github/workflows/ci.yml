@@ -62,12 +62,7 @@ jobs:
       - name: Create MySQL debian.cnf for tests
         run: |
           sudo mkdir -p /etc/mysql
-          sudo tee /etc/mysql/debian.cnf > /dev/null << 'CONF'
-          [client]
-          host=127.0.0.1
-          user=root
-          password=test
-          CONF
+          printf '[client]\nhost=127.0.0.1\nuser=root\npassword=test\n' | sudo tee /etc/mysql/debian.cnf > /dev/null
 
       - name: Run unit tests
         run: cargo test

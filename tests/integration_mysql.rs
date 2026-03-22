@@ -10,6 +10,7 @@ fn mysql_available() -> bool {
 }
 
 fn mysql_exec(query: &str) -> Option<String> {
+    // Try defaults-file first (works on real servers)
     let output = Command::new("mysql")
         .args([
             "--defaults-file=/etc/mysql/debian.cnf",
@@ -19,21 +20,32 @@ fn mysql_exec(query: &str) -> Option<String> {
             query,
         ])
         .output()
-        .or_else(|_| {
-            Command::new("mysql")
-                .args([
-                    "-h",
-                    "127.0.0.1",
-                    "-u",
-                    "root",
-                    &format!("-p{}", std::env::var("MYSQL_PASSWORD").unwrap_or_default()),
-                    "-N",
-                    "-B",
-                    "-e",
-                    query,
-                ])
-                .output()
-        })
+        .ok();
+
+    if let Some(ref o) = output {
+        if o.status.success() {
+            return Some(String::from_utf8_lossy(&o.stdout).trim().to_string());
+        }
+    }
+
+    // Fallback: use env vars (works in CI with service containers)
+    let host = std::env::var("MYSQL_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let user = std::env::var("MYSQL_USER").unwrap_or_else(|_| "root".to_string());
+    let password = std::env::var("MYSQL_PASSWORD").unwrap_or_default();
+
+    let output = Command::new("mysql")
+        .args([
+            "-h",
+            &host,
+            "-u",
+            &user,
+            &format!("-p{password}"),
+            "-N",
+            "-B",
+            "-e",
+            query,
+        ])
+        .output()
         .ok()?;
 
     if output.status.success() {
