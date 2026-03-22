@@ -52,6 +52,29 @@ jobs:
       - name: Install MySQL client
         run: sudo apt-get update && sudo apt-get install -y mysql-client redis-tools
 
+      - name: Install FrankenPHP
+        run: |
+          curl -sL https://github.com/dunglas/frankenphp/releases/latest/download/frankenphp-linux-x86_64 -o /usr/local/bin/frankenphp
+          chmod +x /usr/local/bin/frankenphp
+          frankenphp version
+
+      - name: Start FrankenPHP for integration tests
+        run: |
+          mkdir -p /tmp/frankenphp-test
+          cat > /tmp/frankenphp-test/Caddyfile << 'CADDYEOF'
+          {
+              admin localhost:2019
+              frankenphp
+          }
+
+          :9876 {
+              respond "ok" 200
+          }
+          CADDYEOF
+          frankenphp start --config /tmp/frankenphp-test/Caddyfile
+          sleep 1
+          curl -s http://localhost:2019/config/ > /dev/null
+
       - name: Wait for MySQL
         run: |
           for i in $(seq 1 30); do
@@ -71,6 +94,7 @@ jobs:
         env:
           TEST_MYSQL: "1"
           TEST_REDIS: "1"
+          TEST_FRANKENPHP: "1"
           MYSQL_HOST: 127.0.0.1
           MYSQL_USER: root
           MYSQL_PASSWORD: test
