@@ -747,6 +747,7 @@ pub fn get_num_threads(admin_port: u16) -> Option<u32> {
     let output = Command::new("curl")
         .args([
             "-s",
+            "-f",
             "--connect-timeout",
             "1",
             "--max-time",
@@ -769,15 +770,20 @@ pub fn get_num_threads(admin_port: u16) -> Option<u32> {
 /// exists or not, as long as the parent object exists.
 pub fn set_num_threads(admin_port: u16, value: u32) -> bool {
     // POST with a naked value on the specific path — creates or replaces.
+    // Use -w to get the HTTP status code, -o /dev/null to suppress body.
     let output = Command::new("curl")
         .args([
             "-s",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
             "-X",
             "POST",
             "--connect-timeout",
             "2",
             "--max-time",
-            "3",
+            "5",
             "-H",
             "Content-Type: application/json",
             "-d",
@@ -787,10 +793,9 @@ pub fn set_num_threads(admin_port: u16, value: u32) -> bool {
         .output();
 
     if let Ok(ref o) = output {
-        if o.status.success() {
-            if let Some(actual) = get_num_threads(admin_port) {
-                return actual == value;
-            }
+        let status = String::from_utf8_lossy(&o.stdout);
+        if status.trim() == "200" {
+            return true;
         }
     }
 
@@ -799,9 +804,13 @@ pub fn set_num_threads(admin_port: u16, value: u32) -> bool {
 
 /// Delete num_threads from admin API config (restores built-in default).
 pub fn delete_num_threads(admin_port: u16) -> bool {
-    Command::new("curl")
+    let output = Command::new("curl")
         .args([
             "-s",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
             "-X",
             "DELETE",
             "--connect-timeout",
@@ -810,9 +819,15 @@ pub fn delete_num_threads(admin_port: u16) -> bool {
             "3",
             &format!("http://localhost:{admin_port}/config/apps/frankenphp/num_threads"),
         ])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .output();
+
+    if let Ok(ref o) = output {
+        let status = String::from_utf8_lossy(&o.stdout);
+        let code = status.trim();
+        // 200 = deleted, 404 = key didn't exist (both are fine)
+        return code == "200" || code == "404";
+    }
+    false
 }
 
 /// Run a quick load test and return (rps, avg_latency_ms).
