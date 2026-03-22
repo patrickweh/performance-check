@@ -124,6 +124,15 @@ fn check_env(app_path: &str, ctx: &SystemContext, results: &mut Vec<CheckResult>
                 .with_fix("Set LOG_CHANNEL=stderr", env_file, "LOG_CHANNEL=stderr"),
             );
         }
+        Some("stack") => {
+            results.push(
+                CheckResult::warn(
+                    "LOG_CHANNEL",
+                    "'stack' — may include file-based channels (single/daily) which are problematic with Octane. Check config/logging.php or use 'stderr'",
+                )
+                .with_fix("Set LOG_CHANNEL=stderr", env_file, "LOG_CHANNEL=stderr"),
+            );
+        }
         Some(v) => results.push(CheckResult::info("LOG_CHANNEL", v.to_string())),
         None => results.push(CheckResult::info("LOG_CHANNEL", "Not set (using default)")),
     }
