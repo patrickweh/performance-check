@@ -1,6 +1,7 @@
 use crate::supervisor::OctanePorts;
 use crate::types::SystemContext;
 use colored::Colorize;
+use std::io::Write;
 use std::net::TcpStream;
 use std::process::Command;
 use std::sync::{Arc, Barrier};
@@ -181,6 +182,10 @@ pub fn run_all(
             );
         }
     }
+    println!();
+
+    // num_threads auto-tuning (requires admin API + running server)
+    run_num_threads_tuning(octane_ports, ctx, app_path);
     println!();
 
     // MySQL benchmark
@@ -685,6 +690,444 @@ fn run_http_load_test_inner(
     })
 }
 
+/// Find a reachable Caddy admin API port.
+fn find_admin_port(octane_ports: &OctanePorts) -> Option<u16> {
+    let mut ports = Vec::with_capacity(3);
+    if let Some(p) = octane_ports.admin_port {
+        ports.push(p);
+    }
+    for default in [2019u16, 2020] {
+        if !ports.contains(&default) {
+            ports.push(default);
+        }
+    }
+
+    for port in ports {
+        let output = Command::new("curl")
+            .args([
+                "-s",
+                "--connect-timeout",
+                "1",
+                "--max-time",
+                "2",
+                &format!("http://localhost:{port}/config/"),
+            ])
+            .output();
+
+        match output {
+            Ok(o) if o.status.success() && !o.stdout.is_empty() => return Some(port),
+            _ => continue,
+        }
+    }
+    None
+}
+
+/// Get current num_threads from the Caddy admin API.
+fn get_num_threads(admin_port: u16) -> Option<u32> {
+    let output = Command::new("curl")
+        .args([
+            "-s",
+            "--connect-timeout",
+            "1",
+            "--max-time",
+            "2",
+            &format!("http://localhost:{admin_port}/config/apps/frankenphp/num_threads"),
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
+/// Set num_threads via the Caddy admin API (takes effect immediately).
+fn set_num_threads(admin_port: u16, value: u32) -> bool {
+    Command::new("curl")
+        .args([
+            "-s",
+            "-X",
+            "POST",
+            "--connect-timeout",
+            "2",
+            "--max-time",
+            "3",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            &value.to_string(),
+            &format!("http://localhost:{admin_port}/config/apps/frankenphp/num_threads"),
+        ])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Delete num_threads from admin API config (restores built-in default).
+fn delete_num_threads(admin_port: u16) -> bool {
+    Command::new("curl")
+        .args([
+            "-s",
+            "-X",
+            "DELETE",
+            "--connect-timeout",
+            "2",
+            "--max-time",
+            "3",
+            &format!("http://localhost:{admin_port}/config/apps/frankenphp/num_threads"),
+        ])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Run a quick load test and return (rps, avg_latency_ms).
+fn measure_rps(
+    host: &str,
+    port: u16,
+    is_https: bool,
+    total: u32,
+    concurrency: u32,
+) -> Option<(f64, f64)> {
+    let result = run_http_load_test(host, port, is_https, total, concurrency)?;
+
+    // Extract RPS from first metric label: "Requests/sec: 123.4 (10c)"
+    let rps = result.metrics.first().and_then(|m| {
+        m.label
+            .strip_prefix("Requests/sec: ")
+            .and_then(|s| s.split_whitespace().next())
+            .and_then(|s| s.parse::<f64>().ok())
+    })?;
+
+    // Avg latency is the second metric
+    let avg_lat = result.metrics.get(1).map(|m| m.value_ms).unwrap_or(0.0);
+
+    Some((rps, avg_lat))
+}
+
+/// Result of testing a single num_threads candidate.
+#[derive(Debug, Clone)]
+struct TuningResult {
+    threads: u32,
+    rps: f64,
+    avg_latency_ms: f64,
+}
+
+/// Run num_threads tuning: test different thread counts and find the optimal value.
+///
+/// Uses the Caddy admin API to change num_threads at runtime, runs a load test
+/// for each candidate, then restores the original value. Note that num_threads
+/// is a global FrankenPHP setting and affects all sites on the server.
+pub fn run_num_threads_tuning(octane_ports: &OctanePorts, ctx: &SystemContext, app_path: &str) {
+    println!("    {}", "num_threads Auto-Tuning".bold());
+    println!(
+        "    {}",
+        "Testing different thread counts to find the optimal value...".dimmed()
+    );
+    println!();
+
+    // 1. Detect HTTP port
+    let (host, port, is_https) = match detect_http_port(octane_ports) {
+        Some(v) => v,
+        None => {
+            println!(
+                "      {}",
+                "No running FrankenPHP server detected — cannot tune".yellow()
+            );
+            return;
+        }
+    };
+
+    // 2. Find admin API
+    let admin_port = match find_admin_port(octane_ports) {
+        Some(p) => p,
+        None => {
+            println!(
+                "      {}",
+                "Caddy admin API not reachable — cannot tune num_threads at runtime".yellow()
+            );
+            println!(
+                "      {}",
+                "Ensure the admin API is enabled (default: localhost:2019)".dimmed()
+            );
+            return;
+        }
+    };
+
+    // 3. Get current value
+    let original = get_num_threads(admin_port);
+    let current_label = match original {
+        Some(v) => format!("{v}"),
+        None => format!("{} (default)", ctx.cpu_cores * 2),
+    };
+
+    println!(
+        "      {} current num_threads: {}",
+        "\u{2139}".dimmed(),
+        current_label.bold()
+    );
+    println!(
+        "      {} {}",
+        "\u{26A0}".yellow(),
+        "num_threads is global — affects all sites on this server".yellow()
+    );
+    println!();
+
+    // 4. Build candidate list
+    let cpus = ctx.cpu_cores;
+    let mut candidates: Vec<u32> = vec![
+        (cpus / 2).max(2) as u32,
+        cpus as u32,
+        (cpus * 2) as u32,
+        (cpus * 4) as u32,
+    ];
+    // Include current value if explicitly set
+    if let Some(orig) = original {
+        if !candidates.contains(&orig) {
+            candidates.push(orig);
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+
+    // 5. Warmup with current config
+    print!("      Warming up server...");
+    let _ = std::io::stdout().flush();
+    let _ = run_http_load_test(&host, port, is_https, 20, 5);
+    println!(" done");
+
+    // 6. Test each candidate
+    let mut results: Vec<TuningResult> = Vec::new();
+
+    for &threads in &candidates {
+        print!("      Testing num_threads={threads:<4}");
+        let _ = std::io::stdout().flush();
+
+        if !set_num_threads(admin_port, threads) {
+            println!(" {}", "failed to set via admin API".red());
+            continue;
+        }
+
+        // Wait for config reload
+        std::thread::sleep(Duration::from_secs(2));
+
+        // Small warmup after config change
+        let _ = run_http_load_test(&host, port, is_https, 10, 5);
+
+        // Actual measurement
+        match measure_rps(&host, port, is_https, 100, 10) {
+            Some((rps, avg_lat)) => {
+                println!("  {:>8.1} req/s  {:>8.1}ms avg", rps, avg_lat);
+                results.push(TuningResult {
+                    threads,
+                    rps,
+                    avg_latency_ms: avg_lat,
+                });
+            }
+            None => {
+                println!(" {}", "load test failed".red());
+            }
+        }
+    }
+
+    // 7. Restore original value
+    if let Some(orig) = original {
+        set_num_threads(admin_port, orig);
+    } else {
+        delete_num_threads(admin_port);
+    }
+
+    if results.is_empty() {
+        println!();
+        println!("      {}", "Could not complete any tuning tests".yellow());
+        return;
+    }
+
+    // 8. Display results table
+    println!();
+    println!(
+        "      {:<12} {:>12} {:>14}",
+        "Threads".dimmed(),
+        "Requests/sec".dimmed(),
+        "Avg Latency".dimmed()
+    );
+    println!("      {}", "\u{2500}".repeat(40));
+
+    let best = results
+        .iter()
+        .max_by(|a, b| a.rps.partial_cmp(&b.rps).unwrap())
+        .unwrap();
+
+    for r in &results {
+        let is_best = (r.rps - best.rps).abs() < 0.01;
+        let is_current = original.map(|o| o == r.threads).unwrap_or(false)
+            || (original.is_none() && r.threads == (cpus * 2) as u32);
+
+        let marker = if is_best && is_current {
+            " \u{2190} best (current)".green().bold().to_string()
+        } else if is_best {
+            " \u{2190} best".green().bold().to_string()
+        } else if is_current {
+            " (current)".dimmed().to_string()
+        } else {
+            String::new()
+        };
+
+        println!(
+            "      {:<12} {:>12.1} {:>12.1}ms{}",
+            r.threads, r.rps, r.avg_latency_ms, marker
+        );
+    }
+    println!();
+
+    // 9. Check if a better value was found
+    let current_threads = original.unwrap_or((cpus * 2) as u32);
+    if best.threads == current_threads {
+        println!(
+            "      {}",
+            format!("Current num_threads={current_threads} is already optimal for this workload")
+                .green()
+                .bold()
+        );
+        return;
+    }
+
+    // Calculate improvement
+    let current_result = results.iter().find(|r| r.threads == current_threads);
+    let improvement = current_result
+        .map(|c| ((best.rps - c.rps) / c.rps) * 100.0)
+        .unwrap_or(0.0);
+
+    println!(
+        "      {} num_threads={} would give {:.1}% more throughput",
+        "\u{2728}".bold(),
+        best.threads.to_string().green().bold(),
+        improvement
+    );
+    println!();
+
+    // 10. Ask user whether to apply
+    let selection = dialoguer::Select::new()
+        .with_prompt(format!("      Apply num_threads={} ?", best.threads))
+        .items(&["Apply (Caddyfile + immediate)", "Skip"])
+        .default(0)
+        .interact();
+
+    match selection {
+        Ok(0) => {
+            apply_num_threads(admin_port, best.threads, app_path);
+        }
+        _ => {
+            println!("      {}", "Skipped.".dimmed());
+        }
+    }
+}
+
+/// Apply the optimal num_threads: set via admin API and update Caddyfile.
+fn apply_num_threads(admin_port: u16, value: u32, app_path: &str) {
+    // Set via admin API for immediate effect
+    if set_num_threads(admin_port, value) {
+        println!(
+            "      {}",
+            format!("Applied num_threads={value} via admin API (immediate)").green()
+        );
+    } else {
+        println!("      {}", "Failed to set via admin API".red());
+    }
+
+    // Update Caddyfile for persistence
+    match update_caddyfile_num_threads(app_path, value) {
+        Ok(path) => {
+            println!("      {}", format!("Updated {path} (persistent)").green());
+        }
+        Err(e) => {
+            println!(
+                "      {}",
+                format!("Could not update Caddyfile: {e}").yellow()
+            );
+            println!(
+                "      {} Add to your Caddyfile's frankenphp block:",
+                "\u{2192}".dimmed()
+            );
+            println!("        {}", format!("num_threads {value}").cyan());
+        }
+    }
+}
+
+/// Update num_threads in the Caddyfile. Returns the file path on success.
+fn update_caddyfile_num_threads(app_path: &str, value: u32) -> Result<String, String> {
+    let caddyfile_path = crate::checks::frankenphp::find_caddyfile(app_path)
+        .ok_or_else(|| "Could not find Caddyfile".to_string())?;
+
+    let content = std::fs::read_to_string(&caddyfile_path)
+        .map_err(|e| format!("Failed to read {caddyfile_path}: {e}"))?;
+
+    let mut lines: Vec<String> = content.lines().map(String::from).collect();
+    let mut updated = false;
+
+    // Try to find and update existing num_threads line
+    for line in &mut lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with("num_threads") && !trimmed.starts_with("num_threads_") {
+            let indent = &line[..line.len() - trimmed.len()];
+            *line = format!("{indent}num_threads {value}");
+            updated = true;
+            break;
+        }
+    }
+
+    // If not found, try to insert after "frankenphp {" in the global options block
+    if !updated {
+        let mut in_global = false;
+        for i in 0..lines.len() {
+            let trimmed = lines[i].trim();
+
+            // Detect global options block opening: standalone "{" at top level
+            if !in_global && trimmed == "{" {
+                in_global = true;
+                continue;
+            }
+
+            if in_global && trimmed.starts_with("frankenphp") {
+                // Find where to insert: after the opening brace of the frankenphp block
+                let insert_at = if trimmed.ends_with('{') {
+                    i + 1
+                } else if i + 1 < lines.len() && lines[i + 1].trim().starts_with('{') {
+                    i + 2
+                } else {
+                    continue;
+                };
+
+                // Detect indentation from the frankenphp line
+                let frankenphp_indent = &lines[i][..lines[i].len() - lines[i].trim_start().len()];
+                let inner_indent = format!("{frankenphp_indent}    ");
+                lines.insert(insert_at, format!("{inner_indent}num_threads {value}"));
+                updated = true;
+                break;
+            }
+        }
+    }
+
+    if !updated {
+        return Err(
+            "Could not find frankenphp block in Caddyfile — add num_threads manually".to_string(),
+        );
+    }
+
+    // Preserve trailing newline
+    let mut new_content = lines.join("\n");
+    if content.ends_with('\n') && !new_content.ends_with('\n') {
+        new_content.push('\n');
+    }
+
+    std::fs::write(&caddyfile_path, &new_content)
+        .map_err(|e| format!("Failed to write {caddyfile_path}: {e}"))?;
+
+    Ok(caddyfile_path)
+}
+
 fn avg_ms(durations: &[Duration]) -> f64 {
     if durations.is_empty() {
         return 0.0;
@@ -754,6 +1197,187 @@ mod tests {
     #[test]
     fn avg_ms_empty() {
         assert_eq!(avg_ms(&[]), 0.0);
+    }
+
+    #[test]
+    fn extract_rps_from_load_test_result() {
+        let result = BenchmarkResult {
+            kind: "HTTP Load Test",
+            metrics: vec![
+                Metric {
+                    label: "Requests/sec: 234.5 (10c)".to_string(),
+                    value_ms: 0.0,
+                },
+                Metric {
+                    label: "Avg latency".to_string(),
+                    value_ms: 42.6,
+                },
+            ],
+        };
+
+        let rps = result
+            .metrics
+            .first()
+            .and_then(|m| {
+                m.label
+                    .strip_prefix("Requests/sec: ")
+                    .and_then(|s| s.split_whitespace().next())
+                    .and_then(|s| s.parse::<f64>().ok())
+            })
+            .unwrap();
+
+        assert!((rps - 234.5).abs() < 0.01);
+        assert!((result.metrics[1].value_ms - 42.6).abs() < 0.01);
+    }
+
+    #[test]
+    fn tuning_candidates_dedup() {
+        let cpus: usize = 4;
+        let mut candidates: Vec<u32> = vec![
+            (cpus / 2).max(2) as u32,
+            cpus as u32,
+            (cpus * 2) as u32,
+            (cpus * 4) as u32,
+        ];
+        candidates.sort();
+        candidates.dedup();
+        assert_eq!(candidates, vec![2, 4, 8, 16]);
+    }
+
+    #[test]
+    fn tuning_candidates_small_cpu() {
+        let cpus: usize = 2;
+        let mut candidates: Vec<u32> = vec![
+            (cpus / 2).max(2) as u32,
+            cpus as u32,
+            (cpus * 2) as u32,
+            (cpus * 4) as u32,
+        ];
+        candidates.sort();
+        candidates.dedup();
+        // cpus/2 = 1, max(2) = 2; cpus = 2 → dedup removes one
+        assert_eq!(candidates, vec![2, 4, 8]);
+    }
+
+    #[test]
+    fn tuning_candidates_large_cpu() {
+        let cpus: usize = 14;
+        let mut candidates: Vec<u32> = vec![
+            (cpus / 2).max(2) as u32,
+            cpus as u32,
+            (cpus * 2) as u32,
+            (cpus * 4) as u32,
+        ];
+        candidates.sort();
+        candidates.dedup();
+        assert_eq!(candidates, vec![7, 14, 28, 56]);
+    }
+
+    #[test]
+    fn tuning_candidates_includes_current() {
+        let cpus: usize = 4;
+        let original = Some(10u32);
+        let mut candidates: Vec<u32> = vec![
+            (cpus / 2).max(2) as u32,
+            cpus as u32,
+            (cpus * 2) as u32,
+            (cpus * 4) as u32,
+        ];
+        if let Some(orig) = original {
+            if !candidates.contains(&orig) {
+                candidates.push(orig);
+            }
+        }
+        candidates.sort();
+        candidates.dedup();
+        assert_eq!(candidates, vec![2, 4, 8, 10, 16]);
+    }
+
+    #[test]
+    fn update_caddyfile_replaces_existing_num_threads() {
+        let dir = std::env::temp_dir().join("bench_test_replace");
+        let _ = std::fs::create_dir_all(&dir);
+        let caddyfile = dir.join("Caddyfile");
+
+        let content = r#"{
+    frankenphp {
+        num_threads 28
+        worker /app/public/frankenphp-worker.php 4
+    }
+}
+
+:443 {
+    root * /app/public
+    php_server
+}
+"#;
+        std::fs::write(&caddyfile, content).unwrap();
+
+        // We can't use update_caddyfile_num_threads directly since it uses find_caddyfile,
+        // so test the replacement logic directly
+        let mut lines: Vec<String> = content.lines().map(String::from).collect();
+        let mut updated = false;
+        for line in &mut lines {
+            let trimmed = line.trim();
+            if trimmed.starts_with("num_threads") && !trimmed.starts_with("num_threads_") {
+                let indent = &line[..line.len() - trimmed.len()];
+                *line = format!("{indent}num_threads 14");
+                updated = true;
+                break;
+            }
+        }
+
+        assert!(updated);
+        let result = lines.join("\n");
+        assert!(result.contains("num_threads 14"));
+        assert!(!result.contains("num_threads 28"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_caddyfile_inserts_num_threads() {
+        let content = r#"{
+    frankenphp {
+        worker /app/public/frankenphp-worker.php 4
+    }
+}
+"#;
+
+        let mut lines: Vec<String> = content.lines().map(String::from).collect();
+        let mut updated = false;
+        let mut in_global = false;
+
+        for i in 0..lines.len() {
+            let trimmed = lines[i].trim();
+            if !in_global && trimmed == "{" {
+                in_global = true;
+                continue;
+            }
+            if in_global && trimmed.starts_with("frankenphp") {
+                let insert_at = if trimmed.ends_with('{') {
+                    i + 1
+                } else if i + 1 < lines.len() && lines[i + 1].trim().starts_with('{') {
+                    i + 2
+                } else {
+                    continue;
+                };
+
+                let frankenphp_indent = &lines[i][..lines[i].len() - lines[i].trim_start().len()];
+                let inner_indent = format!("{frankenphp_indent}    ");
+                lines.insert(insert_at, format!("{inner_indent}num_threads 14"));
+                updated = true;
+                break;
+            }
+        }
+
+        assert!(updated);
+        let result = lines.join("\n");
+        assert!(result.contains("num_threads 14"));
+        // Verify it's inside the frankenphp block
+        let nt_pos = result.find("num_threads 14").unwrap();
+        let worker_pos = result.find("worker").unwrap();
+        assert!(nt_pos < worker_pos);
     }
 
     #[test]
