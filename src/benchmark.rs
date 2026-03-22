@@ -743,7 +743,7 @@ fn find_admin_port(octane_ports: &OctanePorts) -> Option<u16> {
 }
 
 /// Get current num_threads from the Caddy admin API.
-fn get_num_threads(admin_port: u16) -> Option<u32> {
+pub fn get_num_threads(admin_port: u16) -> Option<u32> {
     let output = Command::new("curl")
         .args([
             "-s",
@@ -765,40 +765,10 @@ fn get_num_threads(admin_port: u16) -> Option<u32> {
 
 /// Set num_threads via the Caddy admin API (takes effect immediately).
 ///
-/// Tries PATCH on the parent object first (works when num_threads key doesn't exist yet),
-/// then falls back to POST on the specific path (works when key already exists).
-fn set_num_threads(admin_port: u16, value: u32) -> bool {
-    // PATCH merges into the frankenphp object — works even if num_threads doesn't exist yet
-    let patch_body = format!("{{\"num_threads\":{value}}}");
-    let output = Command::new("curl")
-        .args([
-            "-s",
-            "-X",
-            "PATCH",
-            "--connect-timeout",
-            "2",
-            "--max-time",
-            "3",
-            "-H",
-            "Content-Type: application/json",
-            "-d",
-            &patch_body,
-            &format!("http://localhost:{admin_port}/config/apps/frankenphp"),
-        ])
-        .output();
-
-    if let Ok(ref o) = output {
-        if o.status.success() {
-            // Verify it took effect
-            if let Some(actual) = get_num_threads(admin_port) {
-                if actual == value {
-                    return true;
-                }
-            }
-        }
-    }
-
-    // Fallback: POST directly (works when the key already exists)
+/// Uses POST with a naked value on the specific path — works whether the key
+/// exists or not, as long as the parent object exists.
+pub fn set_num_threads(admin_port: u16, value: u32) -> bool {
+    // POST with a naked value on the specific path — creates or replaces.
     let output = Command::new("curl")
         .args([
             "-s",
@@ -828,7 +798,7 @@ fn set_num_threads(admin_port: u16, value: u32) -> bool {
 }
 
 /// Delete num_threads from admin API config (restores built-in default).
-fn delete_num_threads(admin_port: u16) -> bool {
+pub fn delete_num_threads(admin_port: u16) -> bool {
     Command::new("curl")
         .args([
             "-s",
