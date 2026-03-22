@@ -8,7 +8,10 @@ mod types;
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(name = "frankenphp-check", about = "FrankenPHP + Laravel/Flux Performance Checker")]
+#[command(
+    name = "frankenphp-check",
+    about = "FrankenPHP + Laravel/Flux Performance Checker"
+)]
 struct Cli {
     /// Path to the Laravel app (e.g. /home/forge/app.com).
     /// If omitted, auto-discovers apps from nginx/Caddyfile configs.

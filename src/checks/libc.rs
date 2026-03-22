@@ -21,7 +21,10 @@ pub fn check() -> Vec<CheckResult> {
             } else if text_lower.contains("glibc") || text_lower.contains("gnu") {
                 results.push(CheckResult::ok("libc", "glibc"));
             } else {
-                results.push(CheckResult::info("libc", format!("Unknown: {}", text.lines().next().unwrap_or("?"))));
+                results.push(CheckResult::info(
+                    "libc",
+                    format!("Unknown: {}", text.lines().next().unwrap_or("?")),
+                ));
             }
         }
         Err(_) => {
@@ -50,11 +53,19 @@ pub fn check() -> Vec<CheckResult> {
         .args(["-c", "ulimit -n"])
         .output()
         .ok()
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok());
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse::<u64>()
+                .ok()
+        });
 
     match ulimit {
         Some(n) if n >= 65536 => {
-            results.push(CheckResult::ok("File Descriptors (ulimit -n)", format!("{n}")));
+            results.push(CheckResult::ok(
+                "File Descriptors (ulimit -n)",
+                format!("{n}"),
+            ));
         }
         Some(n) => {
             results.push(CheckResult::warn(
@@ -63,7 +74,10 @@ pub fn check() -> Vec<CheckResult> {
             ));
         }
         None => {
-            results.push(CheckResult::info("File Descriptors", "Could not read ulimit"));
+            results.push(CheckResult::info(
+                "File Descriptors",
+                "Could not read ulimit",
+            ));
         }
     }
 
