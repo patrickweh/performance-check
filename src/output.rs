@@ -127,7 +127,17 @@ fn group_by_section(results: &[CheckResult]) -> Vec<(&'static str, Vec<&CheckRes
             "System",
         ),
         (&["libc"], "Runtime"),
-        (&["FrankenPHP Binary", "FrankenPHP Version"], "FrankenPHP"),
+        (
+            &[
+                "FrankenPHP Binary",
+                "FrankenPHP Version",
+                "FrankenPHP Worker",
+                "FrankenPHP num_threads",
+                "FrankenPHP Log",
+                "FrankenPHP Symlink",
+            ],
+            "FrankenPHP",
+        ),
         (&["PHP-ZTS", "PHP ext:"], "PHP Extensions"),
         (
             &[
