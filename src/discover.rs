@@ -128,8 +128,8 @@ fn extract_root_directives(content: &str) -> Vec<String> {
 /// Strip trailing /public from a web root to get the app root
 fn strip_public(path: &str) -> String {
     let path = path.trim_end_matches('/');
-    if path.ends_with("/public") {
-        path[..path.len() - 7].to_string()
+    if let Some(stripped) = path.strip_suffix("/public") {
+        stripped.to_string()
     } else {
         path.to_string()
     }
@@ -138,4 +138,94 @@ fn strip_public(path: &str) -> String {
 /// Quick check: is this actually a Laravel app?
 fn is_laravel_app(path: &str) -> bool {
     Path::new(path).join("artisan").exists()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_public_removes_suffix() {
+        assert_eq!(
+            strip_public("/home/forge/app.com/public"),
+            "/home/forge/app.com"
+        );
+    }
+
+    #[test]
+    fn strip_public_removes_trailing_slash() {
+        assert_eq!(
+            strip_public("/home/forge/app.com/public/"),
+            "/home/forge/app.com"
+        );
+    }
+
+    #[test]
+    fn strip_public_no_public_suffix() {
+        assert_eq!(strip_public("/home/forge/app.com"), "/home/forge/app.com");
+    }
+
+    #[test]
+    fn strip_public_only_public() {
+        assert_eq!(strip_public("/public"), "");
+    }
+
+    #[test]
+    fn extract_nginx_root_directive() {
+        let config = r#"
+server {
+    listen 80;
+    server_name app.com;
+    root /home/forge/app.com/public;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+}
+"#;
+        let roots = extract_root_directives(config);
+        assert_eq!(roots, vec!["/home/forge/app.com"]);
+    }
+
+    #[test]
+    fn extract_multiple_nginx_roots() {
+        let config = r#"
+server {
+    root /home/forge/site1.com/public;
+}
+server {
+    root /home/forge/site2.com/public;
+}
+"#;
+        let roots = extract_root_directives(config);
+        assert_eq!(
+            roots,
+            vec!["/home/forge/site1.com", "/home/forge/site2.com"]
+        );
+    }
+
+    #[test]
+    fn extract_nginx_root_without_public() {
+        let config = "    root /var/www/html;\n";
+        let roots = extract_root_directives(config);
+        assert_eq!(roots, vec!["/var/www/html"]);
+    }
+
+    #[test]
+    fn extract_nginx_ignores_commented_root() {
+        let config = "    # root /old/path/public;\n    root /new/path/public;\n";
+        let roots = extract_root_directives(config);
+        assert_eq!(roots, vec!["/new/path"]);
+    }
+
+    #[test]
+    fn is_laravel_app_with_tempdir() {
+        let dir = tempfile::tempdir().unwrap();
+        // Not a Laravel app initially
+        assert!(!is_laravel_app(dir.path().to_str().unwrap()));
+
+        // Create artisan file
+        std::fs::write(dir.path().join("artisan"), "#!/usr/bin/env php\n").unwrap();
+        assert!(is_laravel_app(dir.path().to_str().unwrap()));
+    }
 }

@@ -4,7 +4,10 @@ use std::process::Command;
 
 pub fn check(ctx: &SystemContext) -> Vec<CheckResult> {
     if !ctx.mysql_running {
-        return vec![CheckResult::info("MySQL/MariaDB", "Not running locally — skipping")];
+        return vec![CheckResult::info(
+            "MySQL/MariaDB",
+            "Not running locally — skipping",
+        )];
     }
 
     let mut results = Vec::new();
@@ -32,7 +35,7 @@ pub fn check(ctx: &SystemContext) -> Vec<CheckResult> {
         .unwrap_or(0);
     let is_mariadb = version
         .as_ref()
-        .map_or(false, |v| v.to_lowercase().contains("mariadb"));
+        .is_some_and(|v| v.to_lowercase().contains("mariadb"));
 
     if let Some(ref v) = version {
         results.push(CheckResult::info("MySQL Version", v.clone()));
@@ -72,7 +75,11 @@ pub fn check(ctx: &SystemContext) -> Vec<CheckResult> {
                         "query_cache_type",
                         format!("'{v}' — should be OFF (global mutex on every write)"),
                     )
-                    .with_fix("Set query_cache_type=0", &cnf, "query_cache_type=0"),
+                    .with_fix(
+                        "Set query_cache_type=0",
+                        &cnf,
+                        "query_cache_type=0",
+                    ),
                 );
             }
             None => {}
@@ -89,11 +96,8 @@ pub fn check(ctx: &SystemContext) -> Vec<CheckResult> {
                 let secs: f64 = v.parse().unwrap_or(10.0);
                 if secs > 1.0 {
                     results.push(
-                        CheckResult::warn(
-                            "long_query_time",
-                            format!("{v}s — recommend ≤1s"),
-                        )
-                        .with_fix("Set long_query_time=1", &cnf, "long_query_time=1"),
+                        CheckResult::warn("long_query_time", format!("{v}s — recommend ≤1s"))
+                            .with_fix("Set long_query_time=1", &cnf, "long_query_time=1"),
                     );
                 } else {
                     results.push(CheckResult::ok("long_query_time", format!("{v}s")));
@@ -119,8 +123,11 @@ pub fn check(ctx: &SystemContext) -> Vec<CheckResult> {
         results.push(CheckResult::ok("max_connections", format!("{max_conn}")));
     } else {
         results.push(
-            CheckResult::warn("max_connections", format!("{max_conn} — recommend ≥100"))
-                .with_fix("Set max_connections=200", &cnf, "max_connections=200"),
+            CheckResult::warn("max_connections", format!("{max_conn} — recommend ≥100")).with_fix(
+                "Set max_connections=200",
+                &cnf,
+                "max_connections=200",
+            ),
         );
     }
 
@@ -143,7 +150,13 @@ pub fn check(ctx: &SystemContext) -> Vec<CheckResult> {
     }
 
     // tmp_table_size
-    check_mysql_bytes("tmp_table_size", 64 * 1024 * 1024, "≥64MB", &cnf, &mut results);
+    check_mysql_bytes(
+        "tmp_table_size",
+        64 * 1024 * 1024,
+        "≥64MB",
+        &cnf,
+        &mut results,
+    );
 
     results
 }
@@ -258,5 +271,43 @@ fn format_bytes(bytes: u64) -> String {
         format!("{}K", bytes / 1024)
     } else {
         format!("{bytes}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_bytes_gigabytes() {
+        assert_eq!(format_bytes(1024 * 1024 * 1024), "1G");
+        assert_eq!(format_bytes(2 * 1024 * 1024 * 1024), "2G");
+    }
+
+    #[test]
+    fn format_bytes_megabytes() {
+        assert_eq!(format_bytes(256 * 1024 * 1024), "256M");
+        assert_eq!(format_bytes(768 * 1024 * 1024), "768M");
+    }
+
+    #[test]
+    fn format_bytes_kilobytes() {
+        assert_eq!(format_bytes(512 * 1024), "512K");
+        // 4096K = 4M, so format_bytes prefers the larger unit
+        assert_eq!(format_bytes(4096 * 1024), "4M");
+    }
+
+    #[test]
+    fn format_bytes_plain() {
+        assert_eq!(format_bytes(512), "512");
+        assert_eq!(format_bytes(0), "0");
+    }
+
+    #[test]
+    fn detect_mysql_cnf_nonexistent_dir() {
+        // /etc/mysql/conf.d may not exist in CI — should return None gracefully
+        let result = detect_mysql_cnf();
+        // Just verify it doesn't panic; result depends on environment
+        let _ = result;
     }
 }

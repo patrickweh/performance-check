@@ -52,7 +52,7 @@ pub fn check(ctx: &SystemContext) -> Vec<CheckResult> {
                 .find(|l| l.starts_with("GOMEMLIMIT="))
                 .map(|l| l.trim_start_matches("GOMEMLIMIT="))
             {
-                results.push(CheckResult::ok("GOMEMLIMIT", format!("{val}")));
+                results.push(CheckResult::ok("GOMEMLIMIT", val.to_string()));
             } else {
                 let mut result = CheckResult::warn(
                     "GOMEMLIMIT",

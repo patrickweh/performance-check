@@ -39,28 +39,119 @@ pub struct Fix {
 
 impl CheckResult {
     pub fn ok(label: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self { status: Status::Ok, label: label.into(), detail: detail.into(), fix: None }
+        Self {
+            status: Status::Ok,
+            label: label.into(),
+            detail: detail.into(),
+            fix: None,
+        }
     }
 
     pub fn warn(label: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self { status: Status::Warn, label: label.into(), detail: detail.into(), fix: None }
+        Self {
+            status: Status::Warn,
+            label: label.into(),
+            detail: detail.into(),
+            fix: None,
+        }
     }
 
     pub fn fail(label: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self { status: Status::Fail, label: label.into(), detail: detail.into(), fix: None }
+        Self {
+            status: Status::Fail,
+            label: label.into(),
+            detail: detail.into(),
+            fix: None,
+        }
     }
 
     pub fn info(label: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self { status: Status::Info, label: label.into(), detail: detail.into(), fix: None }
+        Self {
+            status: Status::Info,
+            label: label.into(),
+            detail: detail.into(),
+            fix: None,
+        }
     }
 
-    pub fn with_fix(mut self, description: impl Into<String>, file: impl Into<String>, content: impl Into<String>) -> Self {
+    pub fn with_fix(
+        mut self,
+        description: impl Into<String>,
+        file: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
         self.fix = Some(Fix {
             description: description.into(),
             file: file.into(),
             content: content.into(),
         });
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_result_ok() {
+        let r = CheckResult::ok("test", "detail");
+        assert_eq!(r.status, Status::Ok);
+        assert_eq!(r.label, "test");
+        assert_eq!(r.detail, "detail");
+        assert!(r.fix.is_none());
+    }
+
+    #[test]
+    fn check_result_with_fix() {
+        let r = CheckResult::warn("opcache.enable", "Off").with_fix(
+            "Enable opcache",
+            "/etc/php.ini",
+            "opcache.enable=1",
+        );
+        assert_eq!(r.status, Status::Warn);
+        let fix = r.fix.unwrap();
+        assert_eq!(fix.description, "Enable opcache");
+        assert_eq!(fix.file, "/etc/php.ini");
+        assert_eq!(fix.content, "opcache.enable=1");
+    }
+
+    #[test]
+    fn check_result_fail() {
+        let r = CheckResult::fail("APP_DEBUG", "true");
+        assert_eq!(r.status, Status::Fail);
+    }
+
+    #[test]
+    fn check_result_info() {
+        let r = CheckResult::info("CPU Cores", "4");
+        assert_eq!(r.status, Status::Info);
+    }
+
+    #[test]
+    fn status_display() {
+        assert_eq!(format!("{}", Status::Ok), "OK  ");
+        assert_eq!(format!("{}", Status::Warn), "WARN");
+        assert_eq!(format!("{}", Status::Fail), "FAIL");
+        assert_eq!(format!("{}", Status::Info), "INFO");
+    }
+
+    #[test]
+    fn check_result_serialization() {
+        let r = CheckResult::ok("test", "value");
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("\"status\":\"ok\""));
+        assert!(json.contains("\"label\":\"test\""));
+        // fix should be omitted when None
+        assert!(!json.contains("\"fix\""));
+    }
+
+    #[test]
+    fn check_result_with_fix_serialization() {
+        let r = CheckResult::warn("key", "detail").with_fix("desc", "file", "content");
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("\"fix\""));
+        assert!(json.contains("\"description\":\"desc\""));
     }
 }
 

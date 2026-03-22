@@ -16,9 +16,7 @@ pub fn print_results(results: &[CheckResult], use_color: bool, json: bool) {
     println!();
     println!(
         "  {}",
-        "FrankenPHP + Laravel Performance Check"
-            .bold()
-            .underline()
+        "FrankenPHP + Laravel Performance Check".bold().underline()
     );
     println!();
 
@@ -61,10 +59,7 @@ pub fn print_results(results: &[CheckResult], use_color: bool, json: bool) {
                     format!(" {}", r.label).bold(),
                 );
                 if !r.detail.is_empty() {
-                    println!(
-                        "          {}",
-                        r.detail.dimmed()
-                    );
+                    println!("          {}", r.detail.dimmed());
                 }
             }
         }
@@ -119,15 +114,56 @@ fn group_by_section(results: &[CheckResult]) -> Vec<(&'static str, Vec<&CheckRes
     let mut sections: Vec<(&str, Vec<&CheckResult>)> = Vec::new();
 
     let section_map: &[(&[&str], &str)] = &[
-        (&["CPU Cores", "Memory", "Swap Usage", "PHP RAM Budget", "Laravel Version", "MySQL/MariaDB", "Redis"], "System"),
+        (
+            &[
+                "CPU Cores",
+                "Memory",
+                "Swap Usage",
+                "PHP RAM Budget",
+                "Laravel Version",
+                "MySQL/MariaDB",
+                "Redis",
+            ],
+            "System",
+        ),
         (&["libc"], "Runtime"),
         (&["FrankenPHP Binary", "FrankenPHP Version"], "FrankenPHP"),
         (&["PHP-ZTS", "PHP ext:"], "PHP Extensions"),
-        (&["opcache.", "realpath_cache", "memory_limit", "Worker Memory"], "PHP Configuration"),
+        (
+            &[
+                "opcache.",
+                "realpath_cache",
+                "memory_limit",
+                "Worker Memory",
+            ],
+            "PHP Configuration",
+        ),
         (&["GODEBUG", "GOMEMLIMIT"], "Go Runtime"),
-        (&["APP_ENV", "APP_DEBUG", "OCTANE_HTTPS", "CACHE_STORE", "QUEUE_CONNECTION", "SESSION_DRIVER", "LOG_CHANNEL"], "Laravel Environment"),
+        (
+            &[
+                "APP_ENV",
+                "APP_DEBUG",
+                "OCTANE_HTTPS",
+                "CACHE_STORE",
+                "QUEUE_CONNECTION",
+                "SESSION_DRIVER",
+                "LOG_CHANNEL",
+            ],
+            "Laravel Environment",
+        ),
         (&["Bootstrap Cache", "composer"], "Laravel Application"),
-        (&["MySQL Version", "innodb_", "query_cache", "slow_query", "long_query", "max_connections", "tmp_table"], "MySQL / MariaDB"),
+        (
+            &[
+                "MySQL Version",
+                "innodb_",
+                "query_cache",
+                "slow_query",
+                "long_query",
+                "max_connections",
+                "tmp_table",
+            ],
+            "MySQL / MariaDB",
+        ),
         (&["Redis"], "Redis"),
     ];
 
@@ -165,14 +201,8 @@ fn group_by_section(results: &[CheckResult]) -> Vec<(&'static str, Vec<&CheckRes
 
 fn count_statuses(results: &[CheckResult]) -> (usize, usize, usize) {
     let ok = results.iter().filter(|r| r.status == Status::Ok).count();
-    let warn = results
-        .iter()
-        .filter(|r| r.status == Status::Warn)
-        .count();
-    let fail = results
-        .iter()
-        .filter(|r| r.status == Status::Fail)
-        .count();
+    let warn = results.iter().filter(|r| r.status == Status::Warn).count();
+    let fail = results.iter().filter(|r| r.status == Status::Fail).count();
     (ok, warn, fail)
 }
 
@@ -228,4 +258,100 @@ fn print_json(results: &[CheckResult]) {
         }
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::CheckResult;
+
+    #[test]
+    fn count_statuses_all_ok() {
+        let results = vec![CheckResult::ok("a", ""), CheckResult::ok("b", "")];
+        assert_eq!(count_statuses(&results), (2, 0, 0));
+    }
+
+    #[test]
+    fn count_statuses_mixed() {
+        let results = vec![
+            CheckResult::ok("a", ""),
+            CheckResult::warn("b", ""),
+            CheckResult::fail("c", ""),
+            CheckResult::info("d", ""),
+        ];
+        // Info is not counted in ok/warn/fail
+        assert_eq!(count_statuses(&results), (1, 1, 1));
+    }
+
+    #[test]
+    fn count_statuses_empty() {
+        assert_eq!(count_statuses(&[]), (0, 0, 0));
+    }
+
+    #[test]
+    fn group_by_section_system() {
+        let results = vec![
+            CheckResult::info("CPU Cores", "4"),
+            CheckResult::info("Memory", "8192MB"),
+            CheckResult::ok("Swap Usage", "No swap"),
+        ];
+        let sections = group_by_section(&results);
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].0, "System");
+        assert_eq!(sections[0].1.len(), 3);
+    }
+
+    #[test]
+    fn group_by_section_multiple() {
+        let results = vec![
+            CheckResult::info("CPU Cores", "4"),
+            CheckResult::ok("opcache.enable", "On"),
+            CheckResult::ok("innodb_buffer_pool_size", "768M"),
+        ];
+        let sections = group_by_section(&results);
+        assert!(sections.len() >= 3);
+        let section_names: Vec<&str> = sections.iter().map(|(n, _)| *n).collect();
+        assert!(section_names.contains(&"System"));
+        assert!(section_names.contains(&"PHP Configuration"));
+        assert!(section_names.contains(&"MySQL / MariaDB"));
+    }
+
+    #[test]
+    fn group_by_section_unassigned_goes_to_other() {
+        let results = vec![CheckResult::ok("SomethingUnknown", "value")];
+        let sections = group_by_section(&results);
+        assert_eq!(sections[0].0, "Other");
+    }
+
+    #[test]
+    fn group_by_section_laravel_env() {
+        let results = vec![
+            CheckResult::ok("APP_ENV", "production"),
+            CheckResult::fail("APP_DEBUG", "true"),
+            CheckResult::ok("QUEUE_CONNECTION", "redis"),
+        ];
+        let sections = group_by_section(&results);
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].0, "Laravel Environment");
+        assert_eq!(sections[0].1.len(), 3);
+    }
+
+    #[test]
+    fn make_bar_full() {
+        // When all results are one status, that bar should be full
+        let bar = make_bar(10, 10, "green");
+        assert_eq!(bar.matches('█').count(), 8); // width=8
+    }
+
+    #[test]
+    fn make_bar_empty() {
+        let bar = make_bar(0, 10, "red");
+        assert_eq!(bar.matches('░').count(), 8);
+    }
+
+    #[test]
+    fn make_bar_zero_total() {
+        let bar = make_bar(0, 0, "yellow");
+        assert_eq!(bar.matches('░').count(), 8);
+    }
 }

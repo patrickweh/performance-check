@@ -8,11 +8,7 @@ use std::process::Command;
 /// Interactively propose fixes for WARN/FAIL results that have fixable actions.
 /// For auto-applicable fixes: runs a fix-specific benchmark before and after,
 /// then asks the user whether to keep the fix or restore the original file.
-pub fn propose_interactive_fixes(
-    results: &[CheckResult],
-    frankenphp_bin: &str,
-    app_path: &str,
-) {
+pub fn propose_interactive_fixes(results: &[CheckResult], frankenphp_bin: &str, app_path: &str) {
     let fixable: Vec<_> = results
         .iter()
         .filter(|r| r.fix.is_some() && matches!(r.status, Status::Warn | Status::Fail))
@@ -76,11 +72,7 @@ pub fn propose_interactive_fixes(
                 status_badge,
                 r.label.bold()
             );
-            println!(
-                "         {} {}",
-                "\u{2192}".dimmed(),
-                content.cyan()
-            );
+            println!("         {} {}", "\u{2192}".dimmed(), content.cyan());
         }
         println!();
 
@@ -96,7 +88,11 @@ pub fn propose_interactive_fixes(
             .with_prompt(format!(
                 "    {}",
                 if bench_available {
-                    format!("Apply {} fix(es)? (benchmark: {})", entries.len(), kind.label())
+                    format!(
+                        "Apply {} fix(es)? (benchmark: {})",
+                        entries.len(),
+                        kind.label()
+                    )
                 } else {
                     format!("Apply {} fix(es)?", entries.len())
                 }
@@ -108,10 +104,10 @@ pub fn propose_interactive_fixes(
         if bench_available {
             match selection {
                 Ok(0) => {
-                    apply_with_benchmark(file, &entries, frankenphp_bin, app_path, kind);
+                    apply_with_benchmark(file, entries, frankenphp_bin, app_path, kind);
                 }
                 Ok(1) => {
-                    apply_file_fixes(file, &entries);
+                    apply_file_fixes(file, entries);
                 }
                 _ => {
                     println!("    {}", "Skipped.".dimmed());
@@ -120,7 +116,7 @@ pub fn propose_interactive_fixes(
         } else {
             match selection {
                 Ok(0) => {
-                    apply_file_fixes(file, &entries);
+                    apply_file_fixes(file, entries);
                 }
                 _ => {
                     println!("    {}", "Skipped.".dimmed());
@@ -194,11 +190,7 @@ pub fn propose_interactive_fixes(
                 status_badge,
                 r.label.bold()
             );
-            println!(
-                "         {} {}",
-                "\u{2192}".dimmed(),
-                content.cyan()
-            );
+            println!("         {} {}", "\u{2192}".dimmed(), content.cyan());
         }
         println!();
 
@@ -213,7 +205,7 @@ pub fn propose_interactive_fixes(
 
         match selection {
             Ok(0) => {
-                apply_systemd_env_fixes(file, &entries);
+                apply_systemd_env_fixes(file, entries);
             }
             _ => {
                 println!("    {}", "Skipped.".dimmed());
@@ -279,10 +271,7 @@ fn apply_with_benchmark(
 
     // 3. Apply fix temporarily
     println!();
-    println!(
-        "    {} Applying fix temporarily...",
-        "\u{25B6}".cyan()
-    );
+    println!("    {} Applying fix temporarily...", "\u{25B6}".cyan());
     apply_file_fixes_silent(file, entries);
 
     // 4. Benchmark AFTER
@@ -320,16 +309,10 @@ fn apply_with_benchmark(
             match &backup {
                 Some(content) => match fs::write(file, content) {
                     Ok(_) => {
-                        println!(
-                            "    {}",
-                            format!("Restored original {file}").green()
-                        );
+                        println!("    {}", format!("Restored original {file}").green());
                     }
                     Err(e) => {
-                        println!(
-                            "    {}",
-                            format!("Failed to restore {file}: {e}").red()
-                        );
+                        println!("    {}", format!("Failed to restore {file}: {e}").red());
                         println!("    {}", "Backup content:".red());
                         for line in content.lines().take(20) {
                             println!("      {}", line.red());
@@ -344,10 +327,7 @@ fn apply_with_benchmark(
                         );
                     }
                     Err(e) => {
-                        println!(
-                            "    {}",
-                            format!("Failed to remove {file}: {e}").red()
-                        );
+                        println!("    {}", format!("Failed to remove {file}: {e}").red());
                     }
                 },
             }
@@ -367,10 +347,7 @@ fn apply_file_fixes(file: &str, entries: &[(&CheckResult, &str)]) {
             print_restart_hint(file);
         }
         Err(e) => {
-            println!(
-                "    {}",
-                format!("Failed to write {file}: {e}").red()
-            );
+            println!("    {}", format!("Failed to write {file}: {e}").red());
             println!("    {}", "Try running with sudo".yellow());
         }
     }
@@ -387,7 +364,8 @@ fn write_fixes(file: &str, entries: &[(&CheckResult, &str)]) -> Result<usize, st
     let mut applied = 0;
 
     // MySQL .cnf files need a [mysqld] section header for settings to be recognized
-    let is_mysql_cnf = file.ends_with(".cnf") && (file.contains("mysql") || file.contains("mariadb"));
+    let is_mysql_cnf =
+        file.ends_with(".cnf") && (file.contains("mysql") || file.contains("mariadb"));
     if is_mysql_cnf && !content.contains("[mysqld]") {
         if !content.is_empty() && !content.ends_with('\n') {
             content.push('\n');
@@ -404,12 +382,9 @@ fn write_fixes(file: &str, entries: &[(&CheckResult, &str)]) -> Result<usize, st
                     .lines()
                     .map(|l| {
                         let trimmed = l.trim();
-                        if trimmed.starts_with(key)
-                            && trimmed[key.len()..].trim_start().starts_with('=')
-                        {
-                            found = true;
-                            line.to_string()
-                        } else if trimmed.starts_with(&format!(";{key}"))
+                        if (trimmed.starts_with(key)
+                            && trimmed[key.len()..].trim_start().starts_with('='))
+                            || trimmed.starts_with(&format!(";{key}"))
                             || trimmed.starts_with(&format!("; {key}"))
                         {
                             found = true;
@@ -462,14 +437,15 @@ fn apply_redis_fixes(entries: &[(&CheckResult, &str)]) {
             Ok(o) if o.status.success() => {
                 let response = String::from_utf8_lossy(&o.stdout).trim().to_string();
                 if response == "OK" {
-                    println!(
-                        "    {}",
-                        format!("Set {} = {}", parts[0], parts[1]).green()
-                    );
+                    println!("    {}", format!("Set {} = {}", parts[0], parts[1]).green());
                 } else {
                     println!(
                         "    {}",
-                        format!("redis-cli CONFIG SET {} {}: {}", parts[0], parts[1], response).red()
+                        format!(
+                            "redis-cli CONFIG SET {} {}: {}",
+                            parts[0], parts[1], response
+                        )
+                        .red()
                     );
                     any_failed = true;
                 }
@@ -478,15 +454,16 @@ fn apply_redis_fixes(entries: &[(&CheckResult, &str)]) {
                 let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
                 println!(
                     "    {}",
-                    format!("Failed: redis-cli CONFIG SET {} {}: {}", parts[0], parts[1], err).red()
+                    format!(
+                        "Failed: redis-cli CONFIG SET {} {}: {}",
+                        parts[0], parts[1], err
+                    )
+                    .red()
                 );
                 any_failed = true;
             }
             Err(e) => {
-                println!(
-                    "    {}",
-                    format!("Could not run redis-cli: {e}").red()
-                );
+                println!("    {}", format!("Could not run redis-cli: {e}").red());
                 any_failed = true;
             }
         }
@@ -502,7 +479,9 @@ fn apply_redis_fixes(entries: &[(&CheckResult, &str)]) {
             Ok(o) if o.status.success() => {
                 println!(
                     "    {}",
-                    "Redis configuration persisted (CONFIG REWRITE).".green().bold()
+                    "Redis configuration persisted (CONFIG REWRITE)."
+                        .green()
+                        .bold()
                 );
             }
             _ => {
@@ -586,10 +565,7 @@ fn apply_systemd_env_fixes(override_path: &str, entries: &[(&CheckResult, &str)]
             // Run systemctl daemon-reload
             match Command::new("systemctl").arg("daemon-reload").output() {
                 Ok(o) if o.status.success() => {
-                    println!(
-                        "    {}",
-                        "Ran systemctl daemon-reload.".green()
-                    );
+                    println!("    {}", "Ran systemctl daemon-reload.".green());
                 }
                 _ => {
                     println!(
@@ -670,7 +646,12 @@ pub fn propose_full_benchmark_fixes(
             println!();
             for (r, content) in &manual_fixes {
                 let fix = r.fix.as_ref().unwrap();
-                println!("    {} {} ({})", " WARN ".on_yellow().black().bold(), r.label.bold(), fix.description.dimmed());
+                println!(
+                    "    {} {} ({})",
+                    " WARN ".on_yellow().black().bold(),
+                    r.label.bold(),
+                    fix.description.dimmed()
+                );
                 println!("       {}", content.cyan());
                 println!();
             }
@@ -681,7 +662,10 @@ pub fn propose_full_benchmark_fixes(
     // Show all fixes that will be applied
     println!();
     println!("  {}", "Full Benchmark Mode".bold().underline());
-    println!("  {}", "All fixes will be applied, benchmarked, then you decide: keep or rollback.".dimmed());
+    println!(
+        "  {}",
+        "All fixes will be applied, benchmarked, then you decide: keep or rollback.".dimmed()
+    );
     println!();
 
     let mut fix_num = 0;
@@ -689,7 +673,11 @@ pub fn propose_full_benchmark_fixes(
         println!("    {}", file.bold());
         for (_r, content) in entries {
             fix_num += 1;
-            println!("      {}. {}", format!("{fix_num}").dimmed(), content.cyan());
+            println!(
+                "      {}. {}",
+                format!("{fix_num}").dimmed(),
+                content.cyan()
+            );
         }
         println!();
     }
@@ -698,7 +686,11 @@ pub fn propose_full_benchmark_fixes(
         println!("    {}", "Redis".bold());
         for (_r, content) in &redis_fix_entries {
             fix_num += 1;
-            println!("      {}. redis-cli CONFIG SET {}", format!("{fix_num}").dimmed(), content.cyan());
+            println!(
+                "      {}. redis-cli CONFIG SET {}",
+                format!("{fix_num}").dimmed(),
+                content.cyan()
+            );
         }
         println!();
     }
@@ -707,7 +699,11 @@ pub fn propose_full_benchmark_fixes(
         println!("    {}", file.bold());
         for (_r, content) in entries {
             fix_num += 1;
-            println!("      {}. {}", format!("{fix_num}").dimmed(), content.cyan());
+            println!(
+                "      {}. {}",
+                format!("{fix_num}").dimmed(),
+                content.cyan()
+            );
         }
         println!();
     }
@@ -752,11 +748,7 @@ pub fn propose_full_benchmark_fixes(
     }
 
     // === STEP 2: Create backups & apply all fixes ===
-    println!(
-        "  {} {}",
-        "\u{25B6}".cyan(),
-        "Applying all fixes...".bold()
-    );
+    println!("  {} {}", "\u{25B6}".cyan(), "Applying all fixes...".bold());
     println!();
 
     // Backup files
@@ -861,7 +853,10 @@ pub fn propose_full_benchmark_fixes(
                 let _ = Command::new("redis-cli")
                     .args(["CONFIG", "REWRITE"])
                     .output();
-                println!("    {}", "Redis configuration persisted (CONFIG REWRITE).".green());
+                println!(
+                    "    {}",
+                    "Redis configuration persisted (CONFIG REWRITE).".green()
+                );
             }
 
             // daemon-reload for systemd
@@ -871,7 +866,10 @@ pub fn propose_full_benchmark_fixes(
             }
 
             println!();
-            println!("    {}", "Restart FrankenPHP and MySQL for changes to take effect.".yellow());
+            println!(
+                "    {}",
+                "Restart FrankenPHP and MySQL for changes to take effect.".yellow()
+            );
         }
         _ => {
             println!();
@@ -1027,6 +1025,161 @@ fn print_restart_hint(file: &str) {
         println!(
             "    {}",
             "Restart MySQL for changes to take effect.".yellow()
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::CheckResult;
+    use tempfile;
+
+    fn dummy_result(fix_content: &str) -> CheckResult {
+        CheckResult::warn("test", "test detail").with_fix("test fix", "/dummy", fix_content)
+    }
+
+    fn entries_from(results: &[CheckResult]) -> Vec<(&CheckResult, &str)> {
+        results
+            .iter()
+            .map(|r| (r, r.fix.as_ref().unwrap().content.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn mysql_cnf_new_file_gets_mysqld_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mysql-custom.cnf");
+        let path_str = path.to_str().unwrap();
+
+        let results = vec![dummy_result("innodb_buffer_pool_size=768M")];
+        let entries = entries_from(&results);
+
+        let count = write_fixes(path_str, &entries).unwrap();
+        assert_eq!(count, 1);
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("[mysqld]"),
+            "Missing [mysqld] header in: {content}"
+        );
+        assert!(content.contains("innodb_buffer_pool_size=768M"));
+    }
+
+    #[test]
+    fn mysql_cnf_existing_header_not_duplicated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mysql-custom.cnf");
+        let path_str = path.to_str().unwrap();
+
+        std::fs::write(&path, "[mysqld]\nmax_connections=50\n").unwrap();
+
+        let results = vec![dummy_result("max_connections=200")];
+        let entries = entries_from(&results);
+
+        write_fixes(path_str, &entries).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let header_count = content.matches("[mysqld]").count();
+        assert_eq!(header_count, 1, "Should not duplicate [mysqld] header");
+        assert!(content.contains("max_connections=200"));
+        assert!(!content.contains("max_connections=50"));
+    }
+
+    #[test]
+    fn mysql_cnf_appends_under_mysqld() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mysql-custom.cnf");
+        let path_str = path.to_str().unwrap();
+
+        std::fs::write(&path, "[mysqld]\ninnodb_log_file_size=64M\n").unwrap();
+
+        let results = vec![dummy_result("tmp_table_size=64M")];
+        let entries = entries_from(&results);
+
+        write_fixes(path_str, &entries).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[mysqld]"));
+        assert!(content.contains("innodb_log_file_size=64M"));
+        assert!(content.contains("tmp_table_size=64M"));
+    }
+
+    #[test]
+    fn php_ini_no_mysqld_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("php.ini");
+        let path_str = path.to_str().unwrap();
+
+        let results = vec![dummy_result("opcache.enable=1")];
+        let entries = entries_from(&results);
+
+        write_fixes(path_str, &entries).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !content.contains("[mysqld]"),
+            "php.ini should not get [mysqld] header"
+        );
+        assert!(content.contains("opcache.enable=1"));
+    }
+
+    #[test]
+    fn replaces_commented_out_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mysql-custom.cnf");
+        let path_str = path.to_str().unwrap();
+
+        std::fs::write(&path, "[mysqld]\n;innodb_buffer_pool_size=128M\n").unwrap();
+
+        let results = vec![dummy_result("innodb_buffer_pool_size=768M")];
+        let entries = entries_from(&results);
+
+        write_fixes(path_str, &entries).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("innodb_buffer_pool_size=768M"));
+        assert!(!content.contains(";innodb_buffer_pool_size"));
+    }
+
+    #[test]
+    fn multiple_fixes_same_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mysql-custom.cnf");
+        let path_str = path.to_str().unwrap();
+
+        let results = vec![
+            dummy_result("innodb_buffer_pool_size=768M"),
+            dummy_result("innodb_log_file_size=256M"),
+            dummy_result("max_connections=200"),
+        ];
+        let entries = entries_from(&results);
+
+        let count = write_fixes(path_str, &entries).unwrap();
+        assert_eq!(count, 3);
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[mysqld]"));
+        assert!(content.contains("innodb_buffer_pool_size=768M"));
+        assert!(content.contains("innodb_log_file_size=256M"));
+        assert!(content.contains("max_connections=200"));
+    }
+
+    #[test]
+    fn mariadb_cnf_gets_mysqld_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mariadb-custom.cnf");
+        let path_str = path.to_str().unwrap();
+
+        let results = vec![dummy_result("innodb_buffer_pool_size=512M")];
+        let entries = entries_from(&results);
+
+        write_fixes(path_str, &entries).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("[mysqld]"),
+            "MariaDB .cnf should also get [mysqld] header"
         );
     }
 }
