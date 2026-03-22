@@ -883,9 +883,12 @@ pub fn propose_full_benchmark_fixes(
             if !backups.is_empty() {
                 println!(
                     "    {}",
-                    format!("Applied {} variable(s) at runtime (SET GLOBAL)", backups.len())
-                        .green()
-                        .to_string()
+                    format!(
+                        "Applied {} variable(s) at runtime (SET GLOBAL)",
+                        backups.len()
+                    )
+                    .green()
+                    .to_string()
                 );
             }
             mysql_runtime_backups.extend(backups);
@@ -1572,10 +1575,7 @@ mod tests {
 
     #[test]
     fn cnf_value_kilobytes() {
-        assert_eq!(
-            cnf_value_to_set_global("512K"),
-            (512u64 * 1024).to_string()
-        );
+        assert_eq!(cnf_value_to_set_global("512K"), (512u64 * 1024).to_string());
     }
 
     #[test]
