@@ -112,7 +112,7 @@ fn check_env(app_path: &str, ctx: &SystemContext, results: &mut Vec<CheckResult>
 
     // LOG_CHANNEL
     match get("LOG_CHANNEL").as_deref() {
-        Some("stderr") | Some("syslog") => {
+        Some("stderr") | Some("syslog") | Some("errorlog") | Some("flare") => {
             results.push(CheckResult::ok("LOG_CHANNEL", get("LOG_CHANNEL").unwrap()));
         }
         Some("single") | Some("daily") => {
@@ -120,6 +120,15 @@ fn check_env(app_path: &str, ctx: &SystemContext, results: &mut Vec<CheckResult>
                 CheckResult::warn(
                     "LOG_CHANNEL",
                     format!("'{}' — file-based logging problematic with Octane (open file handles, rotation issues). Use 'stderr'", get("LOG_CHANNEL").unwrap()),
+                )
+                .with_fix("Set LOG_CHANNEL=stderr", env_file, "LOG_CHANNEL=stderr"),
+            );
+        }
+        Some("stack") => {
+            results.push(
+                CheckResult::warn(
+                    "LOG_CHANNEL",
+                    "'stack' — may include file-based channels (single/daily) which are problematic with Octane. Check config/logging.php or use 'stderr'",
                 )
                 .with_fix("Set LOG_CHANNEL=stderr", env_file, "LOG_CHANNEL=stderr"),
             );

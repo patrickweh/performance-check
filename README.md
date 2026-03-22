@@ -8,12 +8,12 @@ Download the latest binary from [Releases](../../releases):
 
 ```bash
 # amd64
-wget https://github.com/<owner>/performance-check/releases/latest/download/frankenphp-check-linux-amd64
+wget https://github.com/patrickweh/performance-check/releases/latest/download/frankenphp-check-linux-amd64
 chmod +x frankenphp-check-linux-amd64
 sudo mv frankenphp-check-linux-amd64 /usr/local/bin/frankenphp-check
 
 # arm64
-wget https://github.com/<owner>/performance-check/releases/latest/download/frankenphp-check-linux-arm64
+wget https://github.com/patrickweh/performance-check/releases/latest/download/frankenphp-check-linux-arm64
 chmod +x frankenphp-check-linux-arm64
 sudo mv frankenphp-check-linux-arm64 /usr/local/bin/frankenphp-check
 ```
