@@ -523,18 +523,18 @@ fn detect_http_port(octane_ports: &OctanePorts) -> Option<(String, u16, bool)> {
         }
 
         // Probe HTTPS first (Caddy default with auto-HTTPS), then HTTP.
-        if curl_status_code(&format!("https://{host}:{port}/up"), false).is_some() {
-            return Some((host.to_string(), port, true));
-        }
-        if curl_status_code(&format!("http://{host}:{port}/up"), false).is_some() {
-            return Some((host.to_string(), port, false));
-        }
-        // Try root path as fallback
-        if curl_status_code(&format!("https://{host}:{port}/"), false).is_some() {
-            return Some((host.to_string(), port, true));
-        }
-        if curl_status_code(&format!("http://{host}:{port}/"), false).is_some() {
-            return Some((host.to_string(), port, false));
+        // Accept any non-error response (2xx/3xx) — a 404 means the endpoint
+        // doesn't exist, not that the server is reachable for load testing.
+        for path in ["/up", "/"] {
+            for (scheme, is_https) in [("https", true), ("http", false)] {
+                if let Some(status) =
+                    curl_status_code(&format!("{scheme}://{host}:{port}{path}"), false)
+                {
+                    if status.starts_with('2') || status.starts_with('3') {
+                        return Some((host.to_string(), port, is_https));
+                    }
+                }
+            }
         }
     }
 
