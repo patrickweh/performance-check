@@ -1,9 +1,24 @@
+use crate::supervisor::OctanePorts;
 use crate::types::{CheckResult, SystemContext};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-pub fn check(frankenphp_bin: &str, app_path: &str, ctx: &SystemContext) -> Vec<CheckResult> {
+/// Configuration detected from the Caddy admin API.
+#[derive(Debug, Default)]
+struct AdminApiConfig {
+    has_worker: bool,
+    worker_count: Option<u32>,
+    num_threads: Option<u32>,
+    reachable: bool,
+}
+
+pub fn check(
+    frankenphp_bin: &str,
+    app_path: &str,
+    ctx: &SystemContext,
+    octane_ports: &OctanePorts,
+) -> Vec<CheckResult> {
     let mut results = Vec::new();
 
     // Binary exists and is executable
@@ -40,17 +55,20 @@ pub fn check(frankenphp_bin: &str, app_path: &str, ctx: &SystemContext) -> Vec<C
     }
 
     // Parse Caddyfile for per-site configuration
-    let caddyfile = find_caddyfile();
+    let caddyfile = find_caddyfile(app_path);
     let site_config = caddyfile
         .as_ref()
         .and_then(|path| fs::read_to_string(path).ok())
         .map(|content| parse_site_config(&content, app_path));
 
+    // Query the Caddy admin API for runtime configuration (most reliable for Octane)
+    let admin_config = query_admin_api(octane_ports);
+
     // Worker Mode check
-    check_worker_mode(&site_config, &mut results);
+    check_worker_mode(&site_config, &admin_config, &mut results);
 
     // num_threads tuning check
-    check_num_threads(&site_config, ctx, &mut results);
+    check_num_threads(&site_config, &admin_config, ctx, &mut results);
 
     // Log Level check
     if let Some(ref caddyfile_content) = caddyfile
@@ -76,14 +94,137 @@ struct SiteConfig {
 }
 
 /// Find the active Caddyfile.
-fn find_caddyfile() -> Option<String> {
-    let paths = ["/etc/caddy/Caddyfile", "/etc/frankenphp/Caddyfile"];
+///
+/// Search order:
+/// 1. --caddyfile flag from the running FrankenPHP process
+/// 2. Well-known system paths
+/// 3. Project root Caddyfile
+fn find_caddyfile(app_path: &str) -> Option<String> {
+    // Check running FrankenPHP process for --caddyfile or --config flag
+    if let Some(path) = find_caddyfile_from_process() {
+        return Some(path);
+    }
+
+    // Well-known paths + project root
+    let project_caddyfile = format!("{app_path}/Caddyfile");
+    let paths = [
+        "/etc/caddy/Caddyfile",
+        "/etc/frankenphp/Caddyfile",
+        &project_caddyfile,
+    ];
     for path in &paths {
         if Path::new(path).exists() {
             return Some(path.to_string());
         }
     }
     None
+}
+
+/// Extract --caddyfile or --config path from the running FrankenPHP/Caddy process.
+fn find_caddyfile_from_process() -> Option<String> {
+    let output = Command::new("ps")
+        .args(["--no-headers", "-eo", "args"])
+        .output()
+        .ok()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if !line.contains("frankenphp") && !line.contains("caddy") {
+            continue;
+        }
+        // Look for --caddyfile /path or --config /path
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        for (i, part) in parts.iter().enumerate() {
+            if (*part == "--caddyfile" || *part == "--config" || *part == "-c")
+                && i + 1 < parts.len()
+            {
+                let path = parts[i + 1];
+                if Path::new(path).exists() {
+                    return Some(path.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Query the Caddy admin API to detect running configuration.
+///
+/// This is the most reliable detection method for Octane/Forge setups
+/// where the Caddyfile is generated dynamically and not on disk.
+fn query_admin_api(octane_ports: &OctanePorts) -> AdminApiConfig {
+    let mut config = AdminApiConfig::default();
+
+    // Build port list: supervisor-detected admin port first, then common defaults
+    let mut ports = Vec::with_capacity(3);
+    if let Some(p) = octane_ports.admin_port {
+        ports.push(p);
+    }
+    // Always try common defaults as fallback
+    for default in [2019, 2020] {
+        if !ports.contains(&default) {
+            ports.push(default);
+        }
+    }
+
+    for port in ports {
+        let output = Command::new("curl")
+            .args([
+                "-s",
+                "--connect-timeout",
+                "1",
+                "--max-time",
+                "2",
+                &format!("http://localhost:{port}/config/"),
+            ])
+            .output();
+
+        let output = match output {
+            Ok(o) if o.status.success() => o,
+            _ => continue,
+        };
+
+        let body = String::from_utf8_lossy(&output.stdout);
+        if body.is_empty() {
+            continue;
+        }
+
+        config.reachable = true;
+
+        // Parse the JSON response
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+            // Workers are at: apps.frankenphp.workers[]
+            if let Some(workers) = json
+                .pointer("/apps/frankenphp/workers")
+                .and_then(|v| v.as_array())
+            {
+                if !workers.is_empty() {
+                    config.has_worker = true;
+                    // Count worker threads: sum of all workers' "num" values
+                    let total: u32 = workers
+                        .iter()
+                        .filter_map(|w| w.get("num").and_then(|n| n.as_u64()))
+                        .map(|n| n as u32)
+                        .sum();
+                    if total > 0 {
+                        config.worker_count = Some(total);
+                    }
+                }
+            }
+
+            // num_threads is at: apps.frankenphp.num_threads
+            if let Some(nt) = json
+                .pointer("/apps/frankenphp/num_threads")
+                .and_then(|v| v.as_u64())
+            {
+                config.num_threads = Some(nt as u32);
+            }
+        }
+
+        break; // Found a working admin port
+    }
+
+    config
 }
 
 /// Parse the Caddyfile and extract configuration relevant to the given app.
@@ -119,13 +260,36 @@ fn parse_site_config(content: &str, app_path: &str) -> SiteConfig {
             continue;
         }
 
-        // Inside global block: look for frankenphp { num_threads }
+        // Inside global block: look for frankenphp { worker, num_threads }
         if in_global_block {
             if trimmed.starts_with("num_threads") {
                 if let Some(val) = trimmed.split_whitespace().nth(1) {
                     global_num_threads = val.parse().ok();
                 }
             }
+
+            // Worker directive in global frankenphp block (used by Octane)
+            // Short form: worker /path/to/worker.php 8
+            // Block form: worker { file ... num ... }
+            if trimmed.starts_with("worker") {
+                config.has_worker = true;
+                let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                if parts.len() >= 3 {
+                    if let Ok(n) = parts[2].parse::<u32>() {
+                        config.worker_num = Some(n);
+                    }
+                }
+            }
+
+            // num inside a worker block within the global frankenphp block
+            if trimmed.starts_with("num ") {
+                if let Some(val) = trimmed.split_whitespace().nth(1) {
+                    if let Ok(n) = val.parse::<u32>() {
+                        config.worker_num = Some(n);
+                    }
+                }
+            }
+
             brace_depth += opens - closes;
             if brace_depth <= 0 {
                 in_global_block = false;
@@ -210,7 +374,21 @@ fn parse_site_config(content: &str, app_path: &str) -> SiteConfig {
 }
 
 /// Check if worker mode is configured for this app.
-fn check_worker_mode(site_config: &Option<SiteConfig>, results: &mut Vec<CheckResult>) {
+fn check_worker_mode(
+    site_config: &Option<SiteConfig>,
+    admin_config: &AdminApiConfig,
+    results: &mut Vec<CheckResult>,
+) {
+    // Prefer admin API (runtime truth) over static Caddyfile parsing
+    if admin_config.has_worker {
+        let detail = match admin_config.worker_count {
+            Some(n) => format!("enabled ({n} workers, via admin API)"),
+            None => "enabled (via admin API)".to_string(),
+        };
+        results.push(CheckResult::ok("FrankenPHP Worker Mode", detail));
+        return;
+    }
+
     match site_config {
         Some(cfg) if cfg.has_worker => {
             let detail = match cfg.worker_num {
@@ -225,10 +403,17 @@ fn check_worker_mode(site_config: &Option<SiteConfig>, results: &mut Vec<CheckRe
                 "php_server without worker — enable worker mode for significantly better performance",
             ));
         }
+        _ if admin_config.reachable => {
+            // Admin API is up but no workers found — genuinely not using worker mode
+            results.push(CheckResult::warn(
+                "FrankenPHP Worker Mode",
+                "not enabled — enable worker mode for significantly better performance",
+            ));
+        }
         _ => {
             results.push(CheckResult::warn(
                 "FrankenPHP Worker Mode",
-                "Could not detect worker configuration in Caddyfile",
+                "Could not detect worker configuration (no Caddyfile found, admin API unreachable)",
             ));
         }
     }
@@ -237,10 +422,20 @@ fn check_worker_mode(site_config: &Option<SiteConfig>, results: &mut Vec<CheckRe
 /// Check if num_threads is explicitly configured.
 fn check_num_threads(
     site_config: &Option<SiteConfig>,
+    admin_config: &AdminApiConfig,
     ctx: &SystemContext,
     results: &mut Vec<CheckResult>,
 ) {
     let default_threads = ctx.cpu_cores * 2;
+
+    // Prefer admin API
+    if let Some(nt) = admin_config.num_threads {
+        results.push(CheckResult::ok(
+            "FrankenPHP num_threads",
+            format!("{nt} (via admin API)"),
+        ));
+        return;
+    }
 
     match site_config {
         Some(cfg) => {
@@ -455,6 +650,85 @@ app.example.com {
     }
 
     #[test]
+    fn parse_global_worker_short_form() {
+        let caddyfile = r#"
+{
+    frankenphp {
+        worker /home/forge/myapp/public/frankenphp-worker.php 8
+    }
+}
+
+:443 {
+    root * /home/forge/myapp/public
+    php_server
+}
+"#;
+        let cfg = parse_site_config(caddyfile, "/home/forge/myapp");
+        assert!(cfg.has_worker);
+        assert_eq!(cfg.worker_num, Some(8));
+    }
+
+    #[test]
+    fn parse_global_worker_block_form() {
+        let caddyfile = r#"
+{
+    frankenphp {
+        worker {
+            file /home/forge/myapp/public/frankenphp-worker.php
+            num 12
+        }
+    }
+}
+
+:443 {
+    root * /home/forge/myapp/public
+    php_server
+}
+"#;
+        let cfg = parse_site_config(caddyfile, "/home/forge/myapp");
+        assert!(cfg.has_worker);
+        assert_eq!(cfg.worker_num, Some(12));
+    }
+
+    #[test]
+    fn parse_octane_stub_style() {
+        // Simulates the Octane-generated Caddyfile with env vars resolved
+        let caddyfile = r#"
+{
+    admin localhost:2019
+
+    frankenphp {
+        worker {
+            file "/home/forge/myapp/public/frankenphp-worker.php"
+            num 4
+        }
+    }
+}
+
+:443 {
+    log {
+        level WARN
+    }
+
+    route {
+        root * "/home/forge/myapp/public"
+        encode zstd br gzip
+
+        php_server {
+            index frankenphp-worker.php
+            try_files {path} frankenphp-worker.php
+            resolve_root_symlink
+        }
+    }
+}
+"#;
+        let cfg = parse_site_config(caddyfile, "/home/forge/myapp");
+        assert!(cfg.has_worker, "should detect worker in global block");
+        assert_eq!(cfg.worker_num, Some(4));
+        assert!(cfg.has_php_server);
+    }
+
+    #[test]
     fn parse_no_matching_site() {
         let caddyfile = r#"
 other.example.com {
@@ -497,6 +771,10 @@ app.example.com {
 
     // --- Worker mode check tests ---
 
+    fn no_admin() -> AdminApiConfig {
+        AdminApiConfig::default()
+    }
+
     #[test]
     fn worker_mode_ok_when_present() {
         let cfg = SiteConfig {
@@ -506,9 +784,42 @@ app.example.com {
             ..Default::default()
         };
         let mut results = Vec::new();
-        check_worker_mode(&Some(cfg), &mut results);
+        check_worker_mode(&Some(cfg), &no_admin(), &mut results);
         assert_eq!(results[0].status, crate::types::Status::Ok);
         assert!(results[0].detail.contains("8 workers"));
+    }
+
+    #[test]
+    fn worker_mode_ok_from_admin_api() {
+        let admin = AdminApiConfig {
+            has_worker: true,
+            worker_count: Some(4),
+            reachable: true,
+            ..Default::default()
+        };
+        let mut results = Vec::new();
+        check_worker_mode(&None, &admin, &mut results);
+        assert_eq!(results[0].status, crate::types::Status::Ok);
+        assert!(results[0].detail.contains("4 workers"));
+        assert!(results[0].detail.contains("admin API"));
+    }
+
+    #[test]
+    fn worker_mode_admin_api_overrides_caddyfile() {
+        let cfg = SiteConfig {
+            has_php_server: true,
+            has_worker: false,
+            ..Default::default()
+        };
+        let admin = AdminApiConfig {
+            has_worker: true,
+            worker_count: Some(8),
+            reachable: true,
+            ..Default::default()
+        };
+        let mut results = Vec::new();
+        check_worker_mode(&Some(cfg), &admin, &mut results);
+        assert_eq!(results[0].status, crate::types::Status::Ok);
     }
 
     #[test]
@@ -519,15 +830,28 @@ app.example.com {
             ..Default::default()
         };
         let mut results = Vec::new();
-        check_worker_mode(&Some(cfg), &mut results);
+        check_worker_mode(&Some(cfg), &no_admin(), &mut results);
         assert_eq!(results[0].status, crate::types::Status::Warn);
     }
 
     #[test]
     fn worker_mode_warn_when_no_config() {
         let mut results = Vec::new();
-        check_worker_mode(&None, &mut results);
+        check_worker_mode(&None, &no_admin(), &mut results);
         assert_eq!(results[0].status, crate::types::Status::Warn);
+    }
+
+    #[test]
+    fn worker_mode_warn_admin_reachable_no_workers() {
+        let admin = AdminApiConfig {
+            reachable: true,
+            has_worker: false,
+            ..Default::default()
+        };
+        let mut results = Vec::new();
+        check_worker_mode(&None, &admin, &mut results);
+        assert_eq!(results[0].status, crate::types::Status::Warn);
+        assert!(results[0].detail.contains("not enabled"));
     }
 
     // --- num_threads check tests ---
@@ -540,9 +864,23 @@ app.example.com {
         };
         let ctx = dummy_ctx(4);
         let mut results = Vec::new();
-        check_num_threads(&Some(cfg), &ctx, &mut results);
+        check_num_threads(&Some(cfg), &no_admin(), &ctx, &mut results);
         assert_eq!(results[0].status, crate::types::Status::Ok);
         assert!(results[0].detail.contains("16"));
+    }
+
+    #[test]
+    fn num_threads_ok_from_admin_api() {
+        let admin = AdminApiConfig {
+            num_threads: Some(32),
+            reachable: true,
+            ..Default::default()
+        };
+        let ctx = dummy_ctx(4);
+        let mut results = Vec::new();
+        check_num_threads(&None, &admin, &ctx, &mut results);
+        assert_eq!(results[0].status, crate::types::Status::Ok);
+        assert!(results[0].detail.contains("32"));
     }
 
     #[test]
@@ -550,7 +888,7 @@ app.example.com {
         let cfg = SiteConfig::default();
         let ctx = dummy_ctx(4);
         let mut results = Vec::new();
-        check_num_threads(&Some(cfg), &ctx, &mut results);
+        check_num_threads(&Some(cfg), &no_admin(), &ctx, &mut results);
         assert_eq!(results[0].status, crate::types::Status::Warn);
         assert!(results[0].detail.contains("8")); // 2×4
     }
@@ -565,7 +903,7 @@ app.example.com {
         };
         let ctx = dummy_ctx(4);
         let mut results = Vec::new();
-        check_num_threads(&Some(cfg), &ctx, &mut results);
+        check_num_threads(&Some(cfg), &no_admin(), &ctx, &mut results);
         assert_eq!(results[0].status, crate::types::Status::Ok);
         assert!(results[0].detail.contains("12"));
     }
