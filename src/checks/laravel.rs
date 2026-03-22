@@ -112,7 +112,7 @@ fn check_env(app_path: &str, ctx: &SystemContext, results: &mut Vec<CheckResult>
 
     // LOG_CHANNEL
     match get("LOG_CHANNEL").as_deref() {
-        Some("stderr") | Some("syslog") => {
+        Some("stderr") | Some("syslog") | Some("errorlog") | Some("flare") => {
             results.push(CheckResult::ok("LOG_CHANNEL", get("LOG_CHANNEL").unwrap()));
         }
         Some("single") | Some("daily") => {
