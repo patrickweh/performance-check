@@ -140,20 +140,16 @@ pub fn run_all(
     println!("    {}", "HTTP Load Test".bold());
     println!("    {}", "Detecting FrankenPHP server...".dimmed());
 
-    match detect_http_port(octane_ports) {
-        Some((host, port, is_https)) => {
-            let scheme = if is_https { "https" } else { "http" };
-            println!(
-                "    {}",
-                format!("Found server at {scheme}://{host}:{port}").dimmed()
-            );
+    match detect_load_test_url(app_path, octane_ports) {
+        Some(base_url) => {
+            println!("    {}", format!("Found server at {base_url}").dimmed());
             println!(
                 "    {}",
                 "Running load test (100 requests, 10 concurrent)...".dimmed()
             );
             println!();
 
-            match run_http_load_test(&host, port, is_https, 100, 10) {
+            match run_http_load_test_url(&base_url, 100, 10) {
                 Some(result) => {
                     for m in &result.metrics {
                         if m.value_ms > 0.0 {
@@ -171,14 +167,11 @@ pub fn run_all(
         None => {
             println!(
                 "      {}",
-                format!(
-                    "No running FrankenPHP server detected (tried ports {}443, 8000, 8443, 80)",
-                    octane_ports
-                        .http_port
-                        .map(|p| format!("{p}, "))
-                        .unwrap_or_default()
-                )
-                .yellow()
+                "No reachable FrankenPHP server detected".yellow()
+            );
+            println!(
+                "      {}",
+                "Tried APP_URL from .env and direct ports (443, 8000, 80)".dimmed()
             );
         }
     }
@@ -420,6 +413,81 @@ fn php_eval_float(frankenphp_bin: &str, code: &str) -> Option<f64> {
     stdout.parse::<f64>().ok()
 }
 
+/// Read APP_URL from the Laravel .env file.
+fn read_app_url(app_path: &str) -> Option<String> {
+    let env_path = format!("{app_path}/.env");
+    let content = std::fs::read_to_string(env_path).ok()?;
+    for line in content.lines() {
+        let line = line.trim();
+        if let Some(url) = line.strip_prefix("APP_URL=") {
+            let url = url.trim().trim_matches('"').trim_matches('\'');
+            if !url.is_empty() {
+                return Some(url.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Find a working URL for the HTTP load test.
+///
+/// Strategy (in order):
+/// 1. APP_URL from .env (goes through nginx/reverse proxy — the real path)
+/// 2. Direct FrankenPHP port probing (fallback for setups without reverse proxy)
+fn detect_load_test_url(app_path: &str, octane_ports: &OctanePorts) -> Option<String> {
+    // 1. Try APP_URL (most reliable — uses the real request path)
+    if let Some(app_url) = read_app_url(app_path) {
+        // Probe /up endpoint (Laravel health check)
+        let up_url = format!("{}/up", app_url.trim_end_matches('/'));
+        if let Some(status) = curl_status_code(&up_url, false) {
+            if status.starts_with('2') {
+                return Some(app_url);
+            }
+        }
+        // Try with -L (follow redirects, e.g. HTTP → HTTPS)
+        if let Some(status) = curl_status_code(&app_url, true) {
+            if status.starts_with('2') || status.starts_with('3') {
+                return Some(app_url);
+            }
+        }
+    }
+
+    // 2. Fallback: probe ports directly
+    if let Some((host, port, is_https)) = detect_http_port(octane_ports) {
+        let scheme = if is_https { "https" } else { "http" };
+        return Some(format!("{scheme}://{host}:{port}"));
+    }
+
+    None
+}
+
+/// Run an HTTP load test against a base URL.
+fn run_http_load_test_url(
+    base_url: &str,
+    total_requests: u32,
+    concurrency: u32,
+) -> Option<BenchmarkResult> {
+    let candidates = [
+        format!("{}/up", base_url.trim_end_matches('/')),
+        format!("{}/", base_url.trim_end_matches('/')),
+    ];
+
+    for url in &candidates {
+        if let Some(status) = curl_status_code(url, false) {
+            if status.starts_with('2') || status.starts_with('3') {
+                return run_http_load_test_inner(url, total_requests, concurrency);
+            }
+        }
+        if let Some(status) = curl_status_code(url, true) {
+            if status.starts_with('2') || status.starts_with('3') {
+                return run_http_load_test_inner(url, total_requests, concurrency);
+            }
+        }
+    }
+
+    None
+}
+
 /// Detect the port FrankenPHP is listening on.
 /// Tries supervisor-detected port first, then admin API, then common ports.
 fn detect_http_port(octane_ports: &OctanePorts) -> Option<(String, u16, bool)> {
@@ -523,61 +591,6 @@ fn detect_port_from_admin_api(octane_ports: &OctanePorts) -> Option<u16> {
                     }
                 }
             }
-        }
-    }
-
-    None
-}
-
-/// Run an HTTP load test against the FrankenPHP server.
-///
-/// Uses curl for HTTPS support (TLS is complex with raw sockets).
-/// Sends `total_requests` across `concurrency` threads.
-fn run_http_load_test(
-    host: &str,
-    port: u16,
-    is_https: bool,
-    total_requests: u32,
-    concurrency: u32,
-) -> Option<BenchmarkResult> {
-    let scheme = if is_https { "https" } else { "http" };
-
-    // Try multiple endpoints: /up (Laravel health), / (root)
-    // Also try both with and without -L (follow redirects)
-    let candidates = [
-        format!("{scheme}://{host}:{port}/up"),
-        format!("{scheme}://{host}:{port}/"),
-    ];
-
-    // Collect all URLs to try (original scheme + HTTPS fallback)
-    let mut all_urls = candidates.to_vec();
-    if !is_https {
-        all_urls.push(format!("https://{host}:{port}/up"));
-        all_urls.push(format!("https://{host}:{port}/"));
-    }
-
-    for url in &all_urls {
-        // First try without following redirects
-        if let Some(status) = curl_status_code(url, false) {
-            if status.starts_with('2') || status.starts_with('3') {
-                return run_http_load_test_inner(url, total_requests, concurrency);
-            }
-        }
-        // Then try following redirects (e.g. HTTP → HTTPS redirect)
-        if let Some(status) = curl_status_code(url, true) {
-            if status.starts_with('2') || status.starts_with('3') {
-                return run_http_load_test_inner(url, total_requests, concurrency);
-            }
-        }
-    }
-
-    // Log what we tried for diagnostics
-    eprintln!("[debug] HTTP load test: no reachable endpoint found");
-    for url in &all_urls {
-        if let Some(status) = curl_status_code(url, true) {
-            eprintln!("[debug]   {url} → HTTP {status}");
-        } else {
-            eprintln!("[debug]   {url} → connection failed");
         }
     }
 
@@ -841,14 +854,8 @@ pub fn delete_num_threads(admin_port: u16) -> bool {
 }
 
 /// Run a quick load test and return (rps, avg_latency_ms).
-fn measure_rps(
-    host: &str,
-    port: u16,
-    is_https: bool,
-    total: u32,
-    concurrency: u32,
-) -> Option<(f64, f64)> {
-    let result = run_http_load_test(host, port, is_https, total, concurrency)?;
+fn measure_rps(base_url: &str, total: u32, concurrency: u32) -> Option<(f64, f64)> {
+    let result = run_http_load_test_url(base_url, total, concurrency)?;
 
     // Extract RPS from first metric label: "Requests/sec: 123.4 (10c)"
     let rps = result.metrics.first().and_then(|m| {
@@ -885,13 +892,13 @@ pub fn run_num_threads_tuning(octane_ports: &OctanePorts, ctx: &SystemContext, a
     );
     println!();
 
-    // 1. Detect HTTP port
-    let (host, port, is_https) = match detect_http_port(octane_ports) {
-        Some(v) => v,
+    // 1. Detect load test URL
+    let base_url = match detect_load_test_url(app_path, octane_ports) {
+        Some(url) => url,
         None => {
             println!(
                 "      {}",
-                "No running FrankenPHP server detected — cannot tune".yellow()
+                "No reachable FrankenPHP server detected — cannot tune".yellow()
             );
             return;
         }
@@ -952,7 +959,7 @@ pub fn run_num_threads_tuning(octane_ports: &OctanePorts, ctx: &SystemContext, a
     // 5. Warmup with current config
     print!("      Warming up server...");
     let _ = std::io::stdout().flush();
-    let _ = run_http_load_test(&host, port, is_https, 20, 5);
+    let _ = run_http_load_test_url(&base_url, 20, 5);
     println!(" done");
 
     // 6. Test each candidate
@@ -971,10 +978,10 @@ pub fn run_num_threads_tuning(octane_ports: &OctanePorts, ctx: &SystemContext, a
         std::thread::sleep(Duration::from_secs(2));
 
         // Small warmup after config change
-        let _ = run_http_load_test(&host, port, is_https, 10, 5);
+        let _ = run_http_load_test_url(&base_url, 10, 5);
 
         // Actual measurement
-        match measure_rps(&host, port, is_https, 100, 10) {
+        match measure_rps(&base_url, 100, 10) {
             Some((rps, avg_lat)) => {
                 println!("  {:>8.1} req/s  {:>8.1}ms avg", rps, avg_lat);
                 results.push(TuningResult {
