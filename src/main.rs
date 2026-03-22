@@ -104,14 +104,17 @@ fn main() {
         // Output
         output::print_results(&all_results, !cli.no_color, cli.json);
 
-        // Standalone benchmarks
-        if cli.bench && !cli.json {
-            benchmark::run_all(&cli.frankenphp, app_path, &ctx);
-        }
-
-        // Interactive fixes
-        if cli.fix && !cli.json {
-            fixes::propose_interactive_fixes(&all_results, &cli.frankenphp, app_path);
+        if !cli.json {
+            if cli.fix && cli.bench {
+                // Full benchmark mode: benchmark → apply all → benchmark → compare → keep/rollback
+                fixes::propose_full_benchmark_fixes(&all_results, &cli.frankenphp, app_path, &ctx);
+            } else if cli.bench {
+                // Standalone benchmarks only
+                benchmark::run_all(&cli.frankenphp, app_path, &ctx);
+            } else if cli.fix {
+                // Interactive per-fix mode
+                fixes::propose_interactive_fixes(&all_results, &cli.frankenphp, app_path);
+            }
         }
 
         if all_results.iter().any(|r| r.status == types::Status::Fail) {
