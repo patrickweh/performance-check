@@ -148,24 +148,16 @@ pub fn check(ctx: &SystemContext) -> Vec<CheckResult> {
     results
 }
 
-/// Auto-detect custom MySQL config file in /etc/mysql/conf.d/.
-/// Skips known default files that ship with MySQL/MariaDB packages.
+/// Auto-detect MySQL config file in /etc/mysql/conf.d/.
 fn detect_mysql_cnf() -> Option<String> {
     let conf_dir = "/etc/mysql/conf.d";
     let entries = fs::read_dir(conf_dir).ok()?;
 
-    // Files that ship with MySQL/MariaDB by default
-    let default_files = [
-        "mysql.cnf",
-        "mysqldump.cnf",
-        "mysqld_safe_syslog.cnf",
-    ];
-
-    let custom_files: Vec<String> = entries
+    let mut cnf_files: Vec<String> = entries
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
-            if name.ends_with(".cnf") && !default_files.contains(&name.as_str()) {
+            if name.ends_with(".cnf") {
                 Some(format!("{conf_dir}/{name}"))
             } else {
                 None
@@ -173,13 +165,14 @@ fn detect_mysql_cnf() -> Option<String> {
         })
         .collect();
 
-    match custom_files.len() {
+    cnf_files.sort();
+
+    match cnf_files.len() {
         0 => None,
-        1 => Some(custom_files.into_iter().next().unwrap()),
+        1 => Some(cnf_files.into_iter().next().unwrap()),
         _ => {
-            // Multiple custom files found — pick the first one but report all
-            // The user will see them in the output and can adjust
-            Some(custom_files.into_iter().next().unwrap())
+            // Multiple files — let the user know which one we picked
+            Some(cnf_files.into_iter().next().unwrap())
         }
     }
 }
