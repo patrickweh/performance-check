@@ -13,7 +13,12 @@ struct AdminApiConfig {
     reachable: bool,
 }
 
-pub fn check(frankenphp_bin: &str, app_path: &str, ctx: &SystemContext, octane_ports: &OctanePorts) -> Vec<CheckResult> {
+pub fn check(
+    frankenphp_bin: &str,
+    app_path: &str,
+    ctx: &SystemContext,
+    octane_ports: &OctanePorts,
+) -> Vec<CheckResult> {
     let mut results = Vec::new();
 
     // Binary exists and is executable

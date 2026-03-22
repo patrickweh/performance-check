@@ -47,7 +47,10 @@ fn detect_from_process(app_path: &str) -> Option<OctanePorts> {
         if !app_path.is_empty() && !line.contains(app_path) && !line.contains("artisan") {
             continue;
         }
-        if line.contains("frankenphp") || line.contains("--server=frankenphp") || line.contains("octane:start") {
+        if line.contains("frankenphp")
+            || line.contains("--server=frankenphp")
+            || line.contains("octane:start")
+        {
             return Some(parse_octane_flags(line));
         }
     }

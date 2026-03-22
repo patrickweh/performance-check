@@ -91,7 +91,12 @@ fn main() {
         all_results.extend(checks::libc::check());
 
         // 3. FrankenPHP binary + Caddyfile checks
-        all_results.extend(checks::frankenphp::check(&cli.frankenphp, app_path, &ctx, &octane_ports));
+        all_results.extend(checks::frankenphp::check(
+            &cli.frankenphp,
+            app_path,
+            &ctx,
+            &octane_ports,
+        ));
 
         // 4. PHP-ZTS, OPcache, Realpath
         all_results.extend(checks::php::check(&cli.frankenphp, &cli.php_ini, &ctx));

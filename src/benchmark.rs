@@ -105,7 +105,12 @@ impl BenchmarkResult {
 }
 
 /// Run all available benchmarks standalone (--bench flag).
-pub fn run_all(frankenphp_bin: &str, app_path: &str, ctx: &SystemContext, octane_ports: &OctanePorts) {
+pub fn run_all(
+    frankenphp_bin: &str,
+    app_path: &str,
+    ctx: &SystemContext,
+    octane_ports: &OctanePorts,
+) {
     println!();
     println!("  {}", "Benchmarks".bold().underline());
     println!();
@@ -132,10 +137,7 @@ pub fn run_all(frankenphp_bin: &str, app_path: &str, ctx: &SystemContext, octane
 
     // HTTP load test
     println!("    {}", "HTTP Load Test".bold());
-    println!(
-        "    {}",
-        "Detecting FrankenPHP server...".dimmed()
-    );
+    println!("    {}", "Detecting FrankenPHP server...".dimmed());
 
     match detect_http_port(octane_ports) {
         Some((host, port, is_https)) => {
@@ -161,10 +163,7 @@ pub fn run_all(frankenphp_bin: &str, app_path: &str, ctx: &SystemContext, octane
                     }
                 }
                 None => {
-                    println!(
-                        "      {}",
-                        "Could not complete HTTP load test".yellow()
-                    );
+                    println!("      {}", "Could not complete HTTP load test".yellow());
                 }
             }
         }
@@ -173,8 +172,12 @@ pub fn run_all(frankenphp_bin: &str, app_path: &str, ctx: &SystemContext, octane
                 "      {}",
                 format!(
                     "No running FrankenPHP server detected (tried ports {}443, 8000, 8443, 80)",
-                    octane_ports.http_port.map(|p| format!("{p}, ")).unwrap_or_default()
-                ).yellow()
+                    octane_ports
+                        .http_port
+                        .map(|p| format!("{p}, "))
+                        .unwrap_or_default()
+                )
+                .yellow()
             );
         }
     }
@@ -415,10 +418,7 @@ fn php_eval_float(frankenphp_bin: &str, code: &str) -> Option<f64> {
 /// Detect the port FrankenPHP is listening on.
 /// Tries supervisor-detected port first, then admin API, then common ports.
 fn detect_http_port(octane_ports: &OctanePorts) -> Option<(String, u16, bool)> {
-    let host = octane_ports
-        .host
-        .as_deref()
-        .unwrap_or("127.0.0.1");
+    let host = octane_ports.host.as_deref().unwrap_or("127.0.0.1");
 
     // If supervisor config specifies the HTTP port, try it first
     if let Some(port) = octane_ports.http_port {
@@ -527,7 +527,18 @@ fn run_http_load_test(
 
     // Warm up: single request to ensure we get a valid response
     let warmup = Command::new("curl")
-        .args(["-sk", "--connect-timeout", "3", "--max-time", "5", "-o", "/dev/null", "-w", "%{http_code}", &url])
+        .args([
+            "-sk",
+            "--connect-timeout",
+            "3",
+            "--max-time",
+            "5",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            &url,
+        ])
         .output()
         .ok()?;
 
@@ -536,7 +547,18 @@ fn run_http_load_test(
         // Try root path instead
         let url_root = format!("{scheme}://{host}:{port}/");
         let warmup2 = Command::new("curl")
-            .args(["-sk", "--connect-timeout", "3", "--max-time", "5", "-o", "/dev/null", "-w", "%{http_code}", &url_root])
+            .args([
+                "-sk",
+                "--connect-timeout",
+                "3",
+                "--max-time",
+                "5",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                &url_root,
+            ])
             .output()
             .ok()?;
 
