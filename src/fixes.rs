@@ -106,14 +106,8 @@ fn apply_with_benchmark(
     frankenphp_bin: &str,
     app_path: &str,
 ) {
-    // 1. Create backup (full file content)
-    let backup = match fs::read_to_string(file) {
-        Ok(content) => content,
-        Err(e) => {
-            println!("  \x1b[31m✗ Cannot read {file} for backup: {e}\x1b[0m");
-            return;
-        }
-    };
+    // 1. Create backup (full file content, or None if file doesn't exist yet)
+    let backup = fs::read_to_string(file).ok();
 
     // 2. Benchmark BEFORE
     println!("  \x1b[36m▶ Running benchmark (before fix)...\x1b[0m");
@@ -164,17 +158,32 @@ fn apply_with_benchmark(
             print_restart_hint(file);
         }
         _ => {
-            // Restore from backup — full file content, byte-for-byte
-            match fs::write(file, &backup) {
-                Ok(_) => {
-                    println!("  \x1b[32m✓ Restored original {file}\x1b[0m");
+            // Restore from backup
+            match &backup {
+                Some(content) => {
+                    // File existed before — restore original content byte-for-byte
+                    match fs::write(file, content) {
+                        Ok(_) => {
+                            println!("  \x1b[32m✓ Restored original {file}\x1b[0m");
+                        }
+                        Err(e) => {
+                            println!("  \x1b[31m✗ Failed to restore {file}: {e}\x1b[0m");
+                            println!("  \x1b[31m  Backup content was:\x1b[0m");
+                            for line in content.lines().take(20) {
+                                println!("  \x1b[31m  {line}\x1b[0m");
+                            }
+                        }
+                    }
                 }
-                Err(e) => {
-                    println!("  \x1b[31m✗ Failed to restore {file}: {e}\x1b[0m");
-                    println!("  \x1b[31m  Backup content was:\x1b[0m");
-                    // Print first few lines so user can manually restore
-                    for line in backup.lines().take(20) {
-                        println!("  \x1b[31m  {line}\x1b[0m");
+                None => {
+                    // File didn't exist before — remove the newly created file
+                    match fs::remove_file(file) {
+                        Ok(_) => {
+                            println!("  \x1b[32m✓ Removed {file} (did not exist before)\x1b[0m");
+                        }
+                        Err(e) => {
+                            println!("  \x1b[31m✗ Failed to remove {file}: {e}\x1b[0m");
+                        }
                     }
                 }
             }
