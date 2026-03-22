@@ -99,7 +99,7 @@ struct SiteConfig {
 /// 1. --caddyfile flag from the running FrankenPHP process
 /// 2. Well-known system paths
 /// 3. Project root Caddyfile
-fn find_caddyfile(app_path: &str) -> Option<String> {
+pub(crate) fn find_caddyfile(app_path: &str) -> Option<String> {
     // Check running FrankenPHP process for --caddyfile or --config flag
     if let Some(path) = find_caddyfile_from_process() {
         return Some(path);
@@ -453,7 +453,7 @@ fn check_num_threads(
                 results.push(CheckResult::warn(
                     "FrankenPHP num_threads",
                     format!(
-                        "using default ({default_threads} = 2×{} CPUs) — tune based on load tests",
+                        "using default ({default_threads} = 2×{} CPUs) — run with --bench to auto-tune",
                         ctx.cpu_cores
                     ),
                 ));
