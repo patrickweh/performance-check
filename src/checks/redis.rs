@@ -22,7 +22,7 @@ pub fn check(ctx: &SystemContext) -> Vec<CheckResult> {
                 .with_fix(
                     format!("Set Redis maxmemory to {recommended_mb}mb"),
                     "redis-cli",
-                    format!("redis-cli CONFIG SET maxmemory {mb}mb", mb = recommended_mb),
+                    format!("maxmemory {recommended_mb}mb"),
                 ),
             );
         }
@@ -51,7 +51,7 @@ pub fn check(ctx: &SystemContext) -> Vec<CheckResult> {
                 .with_fix(
                     "Set Redis maxmemory-policy to allkeys-lru",
                     "redis-cli",
-                    "redis-cli CONFIG SET maxmemory-policy allkeys-lru",
+                    "maxmemory-policy allkeys-lru",
                 ),
             );
         }

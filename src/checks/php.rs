@@ -21,7 +21,14 @@ pub fn check(frankenphp_bin: &str, php_ini: &str, ctx: &SystemContext) -> Vec<Ch
 
     // Extensions
     for ext in REQUIRED_EXTENSIONS {
-        let loaded = php_eval(frankenphp_bin, &format!("echo extension_loaded('{ext}') ? '1' : '0';"));
+        // OPcache is a Zend extension; extension_loaded('opcache') returns false,
+        // so we use function_exists('opcache_get_status') instead.
+        let check_code = if *ext == "opcache" {
+            "echo function_exists('opcache_get_status') ? '1' : '0';".to_string()
+        } else {
+            format!("echo extension_loaded('{ext}') ? '1' : '0';")
+        };
+        let loaded = php_eval(frankenphp_bin, &check_code);
         match loaded.as_deref() {
             Some("1") => {
                 results.push(CheckResult::ok(
