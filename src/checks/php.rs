@@ -338,4 +338,59 @@ mod tests {
         assert!(REQUIRED_EXTENSIONS.contains(&"redis"));
         assert_eq!(REQUIRED_EXTENSIONS.len(), 8);
     }
+
+    // --- Additional parse_php_size edge cases ---
+
+    #[test]
+    fn parse_php_size_zero() {
+        assert_eq!(parse_php_size("0"), 0);
+        assert_eq!(parse_php_size("0K"), 0);
+        assert_eq!(parse_php_size("0M"), 0);
+        assert_eq!(parse_php_size("0G"), 0);
+    }
+
+    #[test]
+    fn parse_php_size_one_byte() {
+        assert_eq!(parse_php_size("1"), 1);
+    }
+
+    #[test]
+    fn parse_php_size_only_suffix() {
+        assert_eq!(parse_php_size("M"), 0);
+        assert_eq!(parse_php_size("G"), 0);
+        assert_eq!(parse_php_size("K"), 0);
+    }
+
+    #[test]
+    fn parse_php_size_negative() {
+        // PHP doesn't use negative sizes, but our parser should handle gracefully
+        assert_eq!(parse_php_size("-1M"), 0);
+    }
+
+    #[test]
+    fn parse_php_size_common_php_values() {
+        // Common php.ini values
+        assert_eq!(parse_php_size("128M"), 128 * 1024 * 1024);
+        assert_eq!(parse_php_size("256M"), 256 * 1024 * 1024);
+        assert_eq!(parse_php_size("512M"), 512 * 1024 * 1024);
+        assert_eq!(parse_php_size("1G"), 1024 * 1024 * 1024);
+        assert_eq!(parse_php_size("4096K"), 4096 * 1024);
+        assert_eq!(parse_php_size("32M"), 32 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_php_size_realpath_cache_values() {
+        assert_eq!(parse_php_size("4096K"), 4 * 1024 * 1024);
+        assert_eq!(parse_php_size("16K"), 16 * 1024);
+    }
+
+    #[test]
+    fn parse_php_size_boundary_between_units() {
+        // 1024K = 1M
+        assert_eq!(parse_php_size("1024K"), 1024 * 1024);
+        assert_eq!(parse_php_size("1M"), 1024 * 1024);
+        // 1024M = 1G
+        assert_eq!(parse_php_size("1024M"), 1024 * 1024 * 1024);
+        assert_eq!(parse_php_size("1G"), 1024 * 1024 * 1024);
+    }
 }

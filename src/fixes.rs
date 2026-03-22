@@ -1182,4 +1182,242 @@ mod tests {
             "MariaDB .cnf should also get [mysqld] header"
         );
     }
+
+    // --- Key replacement edge cases ---
+
+    #[test]
+    fn replaces_key_with_spaces_around_equals() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("php.ini");
+        let path_str = path.to_str().unwrap();
+
+        std::fs::write(&path, "opcache.enable = 0\n").unwrap();
+
+        let results = vec![dummy_result("opcache.enable=1")];
+        let entries = entries_from(&results);
+
+        write_fixes(path_str, &entries).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("opcache.enable=1"));
+        assert!(!content.contains("opcache.enable = 0"));
+    }
+
+    #[test]
+    fn does_not_replace_substring_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mysql-custom.cnf");
+        let path_str = path.to_str().unwrap();
+
+        // "max" should not match "max_connections"
+        std::fs::write(&path, "[mysqld]\nmax_connections=100\n").unwrap();
+
+        let results = vec![dummy_result("max=50")];
+        let entries = entries_from(&results);
+
+        write_fixes(path_str, &entries).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        // max_connections should be untouched
+        assert!(content.contains("max_connections=100"));
+        // max=50 should be appended
+        assert!(content.contains("max=50"));
+    }
+
+    #[test]
+    fn replaces_commented_with_space() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("php.ini");
+        let path_str = path.to_str().unwrap();
+
+        std::fs::write(&path, "; opcache.jit_buffer_size=64M\n").unwrap();
+
+        let results = vec![dummy_result("opcache.jit_buffer_size=128M")];
+        let entries = entries_from(&results);
+
+        write_fixes(path_str, &entries).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("opcache.jit_buffer_size=128M"));
+        assert!(!content.contains("; opcache"));
+    }
+
+    #[test]
+    fn multiline_fix_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mysql-custom.cnf");
+        let path_str = path.to_str().unwrap();
+
+        let results = vec![dummy_result("slow_query_log=1\nlong_query_time=1")];
+        let entries = entries_from(&results);
+
+        let count = write_fixes(path_str, &entries).unwrap();
+        assert_eq!(count, 2, "Each line counts as one fix");
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("slow_query_log=1"));
+        assert!(content.contains("long_query_time=1"));
+    }
+
+    #[test]
+    fn empty_file_gets_header_and_fix() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mysql-empty.cnf");
+        let path_str = path.to_str().unwrap();
+
+        std::fs::write(&path, "").unwrap();
+
+        let results = vec![dummy_result("innodb_buffer_pool_size=768M")];
+        let entries = entries_from(&results);
+
+        write_fixes(path_str, &entries).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[mysqld]"));
+        assert!(content.contains("innodb_buffer_pool_size=768M"));
+    }
+
+    #[test]
+    fn file_with_only_mysqld_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mysql-bare.cnf");
+        let path_str = path.to_str().unwrap();
+
+        std::fs::write(&path, "[mysqld]\n").unwrap();
+
+        let results = vec![dummy_result("max_connections=200")];
+        let entries = entries_from(&results);
+
+        write_fixes(path_str, &entries).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content.matches("[mysqld]").count(), 1);
+        assert!(content.contains("max_connections=200"));
+    }
+
+    #[test]
+    fn non_mysql_cnf_no_header() {
+        // A .cnf file that's NOT in a mysql/mariadb path
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("something.cnf");
+        let path_str = path.to_str().unwrap();
+
+        let results = vec![dummy_result("key=value")];
+        let entries = entries_from(&results);
+
+        write_fixes(path_str, &entries).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !content.contains("[mysqld]"),
+            "Non-mysql .cnf should not get [mysqld] header"
+        );
+    }
+
+    #[test]
+    fn preserves_other_content_in_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("php.ini");
+        let path_str = path.to_str().unwrap();
+
+        std::fs::write(
+            &path,
+            "[PHP]\nmax_execution_time=30\nmemory_limit=128M\ndate.timezone=UTC\n",
+        )
+        .unwrap();
+
+        let results = vec![dummy_result("memory_limit=256M")];
+        let entries = entries_from(&results);
+
+        write_fixes(path_str, &entries).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[PHP]"), "Should preserve [PHP] header");
+        assert!(
+            content.contains("max_execution_time=30"),
+            "Untouched keys preserved"
+        );
+        assert!(
+            content.contains("date.timezone=UTC"),
+            "Untouched keys preserved"
+        );
+        assert!(content.contains("memory_limit=256M"), "Key replaced");
+        assert!(!content.contains("memory_limit=128M"), "Old value gone");
+    }
+
+    #[test]
+    fn fix_applied_count_accurate() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("php.ini");
+        let path_str = path.to_str().unwrap();
+
+        std::fs::write(&path, "opcache.enable=0\nrealpath_cache_ttl=120\n").unwrap();
+
+        let results = vec![
+            dummy_result("opcache.enable=1"),
+            dummy_result("realpath_cache_ttl=600"),
+            dummy_result("opcache.jit_buffer_size=128M"),
+        ];
+        let entries = entries_from(&results);
+
+        let count = write_fixes(path_str, &entries).unwrap();
+        assert_eq!(count, 3, "2 replacements + 1 append = 3");
+    }
+
+    #[test]
+    fn write_fixes_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("php.ini");
+        let path_str = path.to_str().unwrap();
+
+        std::fs::write(&path, "opcache.enable=0\n").unwrap();
+
+        let results = vec![dummy_result("opcache.enable=1")];
+        let entries = entries_from(&results);
+
+        write_fixes(path_str, &entries).unwrap();
+        let after_first = std::fs::read_to_string(&path).unwrap();
+
+        write_fixes(path_str, &entries).unwrap();
+        let after_second = std::fs::read_to_string(&path).unwrap();
+
+        assert_eq!(
+            after_first, after_second,
+            "Applying same fix twice should be idempotent"
+        );
+    }
+
+    // --- BenchmarkKind::from_file ---
+
+    #[test]
+    fn benchmark_kind_php_zts_path() {
+        assert!(matches!(
+            BenchmarkKind::from_file("/etc/php-zts/php.ini"),
+            BenchmarkKind::Php
+        ));
+    }
+
+    #[test]
+    fn benchmark_kind_mysql_conf_d() {
+        assert!(matches!(
+            BenchmarkKind::from_file("/etc/mysql/conf.d/custom.cnf"),
+            BenchmarkKind::Mysql
+        ));
+    }
+
+    #[test]
+    fn benchmark_kind_env_file() {
+        assert!(matches!(
+            BenchmarkKind::from_file("/home/forge/app/.env"),
+            BenchmarkKind::None
+        ));
+    }
+
+    #[test]
+    fn benchmark_kind_systemd_override() {
+        assert!(matches!(
+            BenchmarkKind::from_file("/etc/systemd/system/frankenphp.service.d/override.conf"),
+            BenchmarkKind::None
+        ));
+    }
 }

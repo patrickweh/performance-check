@@ -464,7 +464,6 @@ LOG_CHANNEL=stderr
         let classmap_dir = dir.path().join("vendor/composer");
         fs::create_dir_all(&classmap_dir).unwrap();
 
-        // Create classmap with 150 entries
         let content: String = (0..150)
             .map(|i| format!("'Class{i}' => '/path/{i}.php',\n"))
             .collect();
@@ -479,5 +478,368 @@ LOG_CHANNEL=stderr
 
         assert_eq!(results[0].status, Status::Ok);
         assert!(results[0].detail.contains("optimized"));
+    }
+
+    #[test]
+    fn composer_classmap_boundary_99_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let classmap_dir = dir.path().join("vendor/composer");
+        fs::create_dir_all(&classmap_dir).unwrap();
+
+        let content: String = (0..99)
+            .map(|i| format!("'Class{i}' => '/path/{i}.php',\n"))
+            .collect();
+        fs::write(
+            classmap_dir.join("autoload_classmap.php"),
+            format!("<?php\nreturn array(\n{content});"),
+        )
+        .unwrap();
+
+        let mut results = Vec::new();
+        check_composer(dir.path().to_str().unwrap(), &mut results);
+        assert_eq!(results[0].status, Status::Warn, "99 entries should be Warn");
+    }
+
+    #[test]
+    fn composer_classmap_boundary_100_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let classmap_dir = dir.path().join("vendor/composer");
+        fs::create_dir_all(&classmap_dir).unwrap();
+
+        let content: String = (0..100)
+            .map(|i| format!("'Class{i}' => '/path/{i}.php',\n"))
+            .collect();
+        fs::write(
+            classmap_dir.join("autoload_classmap.php"),
+            format!("<?php\nreturn array(\n{content});"),
+        )
+        .unwrap();
+
+        let mut results = Vec::new();
+        check_composer(dir.path().to_str().unwrap(), &mut results);
+        assert_eq!(results[0].status, Status::Ok, "100 entries should be Ok");
+    }
+
+    #[test]
+    fn composer_classmap_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let classmap_dir = dir.path().join("vendor/composer");
+        fs::create_dir_all(&classmap_dir).unwrap();
+        fs::write(
+            classmap_dir.join("autoload_classmap.php"),
+            "<?php\nreturn array(\n);",
+        )
+        .unwrap();
+
+        let mut results = Vec::new();
+        check_composer(dir.path().to_str().unwrap(), &mut results);
+        assert_eq!(results[0].status, Status::Warn);
+    }
+
+    // --- Additional .env edge cases ---
+
+    #[test]
+    fn env_app_env_not_production() {
+        let dir = tempfile::tempdir().unwrap();
+        create_laravel_app(dir.path(), "APP_ENV=local\n");
+        let ctx = test_ctx(false, None);
+        let mut results = Vec::new();
+        check_env(dir.path().to_str().unwrap(), &ctx, &mut results);
+
+        let r = results.iter().find(|r| r.label == "APP_ENV").unwrap();
+        assert_eq!(r.status, Status::Fail);
+        assert!(r.fix.is_some());
+    }
+
+    #[test]
+    fn env_app_env_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        create_laravel_app(dir.path(), "APP_ENV=staging\n");
+        let ctx = test_ctx(false, None);
+        let mut results = Vec::new();
+        check_env(dir.path().to_str().unwrap(), &ctx, &mut results);
+
+        let r = results.iter().find(|r| r.label == "APP_ENV").unwrap();
+        assert_eq!(r.status, Status::Fail);
+    }
+
+    #[test]
+    fn env_cache_store_not_redis_with_redis_running() {
+        let dir = tempfile::tempdir().unwrap();
+        create_laravel_app(dir.path(), "CACHE_STORE=file\n");
+        let ctx = test_ctx(true, None);
+        let mut results = Vec::new();
+        check_env(dir.path().to_str().unwrap(), &ctx, &mut results);
+
+        let r = results.iter().find(|r| r.label == "CACHE_STORE").unwrap();
+        assert_eq!(r.status, Status::Warn);
+    }
+
+    #[test]
+    fn env_cache_store_not_redis_without_redis() {
+        let dir = tempfile::tempdir().unwrap();
+        create_laravel_app(dir.path(), "CACHE_STORE=file\n");
+        let ctx = test_ctx(false, None);
+        let mut results = Vec::new();
+        check_env(dir.path().to_str().unwrap(), &ctx, &mut results);
+
+        let r = results.iter().find(|r| r.label == "CACHE_STORE").unwrap();
+        assert_eq!(r.status, Status::Info);
+    }
+
+    #[test]
+    fn env_queue_redis_is_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        create_laravel_app(dir.path(), "QUEUE_CONNECTION=redis\n");
+        let ctx = test_ctx(false, None);
+        let mut results = Vec::new();
+        check_env(dir.path().to_str().unwrap(), &ctx, &mut results);
+
+        let r = results
+            .iter()
+            .find(|r| r.label == "QUEUE_CONNECTION")
+            .unwrap();
+        assert_eq!(r.status, Status::Ok);
+    }
+
+    #[test]
+    fn env_queue_database_is_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        create_laravel_app(dir.path(), "QUEUE_CONNECTION=database\n");
+        let ctx = test_ctx(false, None);
+        let mut results = Vec::new();
+        check_env(dir.path().to_str().unwrap(), &ctx, &mut results);
+
+        let r = results
+            .iter()
+            .find(|r| r.label == "QUEUE_CONNECTION")
+            .unwrap();
+        assert_eq!(r.status, Status::Ok);
+    }
+
+    #[test]
+    fn env_log_channel_stderr_is_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        create_laravel_app(dir.path(), "LOG_CHANNEL=stderr\n");
+        let ctx = test_ctx(false, None);
+        let mut results = Vec::new();
+        check_env(dir.path().to_str().unwrap(), &ctx, &mut results);
+
+        let r = results.iter().find(|r| r.label == "LOG_CHANNEL").unwrap();
+        assert_eq!(r.status, Status::Ok);
+    }
+
+    #[test]
+    fn env_log_channel_syslog_is_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        create_laravel_app(dir.path(), "LOG_CHANNEL=syslog\n");
+        let ctx = test_ctx(false, None);
+        let mut results = Vec::new();
+        check_env(dir.path().to_str().unwrap(), &ctx, &mut results);
+
+        let r = results.iter().find(|r| r.label == "LOG_CHANNEL").unwrap();
+        assert_eq!(r.status, Status::Ok);
+    }
+
+    #[test]
+    fn env_log_channel_single_is_warn() {
+        let dir = tempfile::tempdir().unwrap();
+        create_laravel_app(dir.path(), "LOG_CHANNEL=single\n");
+        let ctx = test_ctx(false, None);
+        let mut results = Vec::new();
+        check_env(dir.path().to_str().unwrap(), &ctx, &mut results);
+
+        let r = results.iter().find(|r| r.label == "LOG_CHANNEL").unwrap();
+        assert_eq!(r.status, Status::Warn);
+    }
+
+    #[test]
+    fn env_log_channel_stack_is_warn() {
+        let dir = tempfile::tempdir().unwrap();
+        create_laravel_app(dir.path(), "LOG_CHANNEL=stack\n");
+        let ctx = test_ctx(false, None);
+        let mut results = Vec::new();
+        check_env(dir.path().to_str().unwrap(), &ctx, &mut results);
+
+        let r = results.iter().find(|r| r.label == "LOG_CHANNEL").unwrap();
+        assert_eq!(r.status, Status::Warn);
+    }
+
+    #[test]
+    fn env_octane_https_not_set() {
+        let dir = tempfile::tempdir().unwrap();
+        create_laravel_app(dir.path(), "APP_ENV=production\n");
+        let ctx = test_ctx(false, None);
+        let mut results = Vec::new();
+        check_env(dir.path().to_str().unwrap(), &ctx, &mut results);
+
+        let r = results.iter().find(|r| r.label == "OCTANE_HTTPS").unwrap();
+        assert_eq!(r.status, Status::Warn);
+    }
+
+    #[test]
+    fn env_session_driver_redis_is_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        create_laravel_app(dir.path(), "SESSION_DRIVER=redis\n");
+        let ctx = test_ctx(true, None);
+        let mut results = Vec::new();
+        check_env(dir.path().to_str().unwrap(), &ctx, &mut results);
+
+        let r = results
+            .iter()
+            .find(|r| r.label == "SESSION_DRIVER")
+            .unwrap();
+        assert_eq!(r.status, Status::Ok);
+    }
+
+    #[test]
+    fn env_session_driver_database_without_redis() {
+        let dir = tempfile::tempdir().unwrap();
+        create_laravel_app(dir.path(), "SESSION_DRIVER=database\n");
+        let ctx = test_ctx(false, None);
+        let mut results = Vec::new();
+        check_env(dir.path().to_str().unwrap(), &ctx, &mut results);
+
+        let r = results
+            .iter()
+            .find(|r| r.label == "SESSION_DRIVER")
+            .unwrap();
+        assert_eq!(r.status, Status::Ok);
+    }
+
+    #[test]
+    fn env_app_debug_not_set_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        create_laravel_app(dir.path(), "APP_ENV=production\n");
+        let ctx = test_ctx(false, None);
+        let mut results = Vec::new();
+        check_env(dir.path().to_str().unwrap(), &ctx, &mut results);
+
+        let r = results.iter().find(|r| r.label == "APP_DEBUG").unwrap();
+        assert_eq!(
+            r.status,
+            Status::Warn,
+            "Missing APP_DEBUG should warn, not fail"
+        );
+    }
+
+    #[test]
+    fn env_value_with_equals_sign() {
+        let dir = tempfile::tempdir().unwrap();
+        create_laravel_app(dir.path(), "APP_ENV=production\nAPP_KEY=base64:abc=def=\n");
+        let ctx = test_ctx(false, None);
+        let mut results = Vec::new();
+        check_env(dir.path().to_str().unwrap(), &ctx, &mut results);
+
+        let r = results.iter().find(|r| r.label == "APP_ENV").unwrap();
+        assert_eq!(
+            r.status,
+            Status::Ok,
+            "Should parse APP_ENV correctly despite APP_KEY with ="
+        );
+    }
+
+    // --- Full integration-style .env test ---
+
+    #[test]
+    fn env_full_worst_case_config() {
+        let dir = tempfile::tempdir().unwrap();
+        create_laravel_app(
+            dir.path(),
+            "\
+APP_ENV=local
+APP_DEBUG=true
+QUEUE_CONNECTION=sync
+LOG_CHANNEL=daily
+",
+        );
+        let ctx = test_ctx(false, None);
+        let mut results = Vec::new();
+        check_env(dir.path().to_str().unwrap(), &ctx, &mut results);
+
+        let fail_count = results.iter().filter(|r| r.status == Status::Fail).count();
+        let warn_count = results.iter().filter(|r| r.status == Status::Warn).count();
+        assert!(
+            fail_count >= 3,
+            "Worst case should have ≥3 fails, got {fail_count}"
+        );
+        assert!(
+            warn_count >= 1,
+            "Worst case should have ≥1 warn, got {warn_count}"
+        );
+    }
+
+    // --- Bootstrap cache edge cases ---
+
+    #[test]
+    fn bootstrap_cache_partial_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("bootstrap/cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+
+        // Only config.php exists
+        fs::write(cache_dir.join("config.php"), "<?php return [];").unwrap();
+
+        let ctx = test_ctx(false, Some(11));
+        let mut results = Vec::new();
+        check_bootstrap_cache(dir.path().to_str().unwrap(), &ctx, &mut results);
+
+        let ok_count = results.iter().filter(|r| r.status == Status::Ok).count();
+        let warn_count = results.iter().filter(|r| r.status == Status::Warn).count();
+        assert_eq!(ok_count, 1);
+        assert_eq!(warn_count, 2); // routes-v7.php and services.php missing
+    }
+
+    // --- Full check() function test ---
+
+    #[test]
+    fn full_check_with_complete_laravel_app() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create .env
+        fs::write(
+            dir.path().join(".env"),
+            "\
+APP_ENV=production
+APP_DEBUG=false
+OCTANE_HTTPS=true
+CACHE_STORE=redis
+QUEUE_CONNECTION=redis
+SESSION_DRIVER=redis
+LOG_CHANNEL=stderr
+",
+        )
+        .unwrap();
+
+        // Create bootstrap cache
+        let cache_dir = dir.path().join("bootstrap/cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+        for file in &["config.php", "routes-v7.php", "services.php"] {
+            fs::write(cache_dir.join(file), "<?php return [];").unwrap();
+        }
+
+        // Create optimized classmap
+        let classmap_dir = dir.path().join("vendor/composer");
+        fs::create_dir_all(&classmap_dir).unwrap();
+        let content: String = (0..200)
+            .map(|i| format!("'Class{i}' => '/path/{i}.php',\n"))
+            .collect();
+        fs::write(
+            classmap_dir.join("autoload_classmap.php"),
+            format!("<?php\nreturn array(\n{content});"),
+        )
+        .unwrap();
+
+        let ctx = test_ctx(true, Some(11));
+        let results = check(dir.path().to_str().unwrap(), &ctx);
+
+        let fail_count = results.iter().filter(|r| r.status == Status::Fail).count();
+        assert_eq!(fail_count, 0, "Perfect config should have 0 fails");
+
+        let ok_count = results.iter().filter(|r| r.status == Status::Ok).count();
+        assert!(
+            ok_count >= 10,
+            "Should have many OK results, got {ok_count}"
+        );
     }
 }

@@ -9,6 +9,30 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: test
+          MYSQL_DATABASE: test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=5
+
     steps:
       - uses: actions/checkout@v4
 
@@ -25,8 +49,37 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      - name: Run tests
+      - name: Install MySQL client
+        run: sudo apt-get update && sudo apt-get install -y mysql-client redis-tools
+
+      - name: Wait for MySQL
+        run: |
+          for i in $(seq 1 30); do
+            mysqladmin ping -h 127.0.0.1 -u root -ptest 2>/dev/null && break
+            sleep 1
+          done
+
+      - name: Create MySQL debian.cnf for tests
+        run: |
+          sudo mkdir -p /etc/mysql
+          sudo tee /etc/mysql/debian.cnf > /dev/null << 'CONF'
+          [client]
+          host=127.0.0.1
+          user=root
+          password=test
+          CONF
+
+      - name: Run unit tests
         run: cargo test
+
+      - name: Run integration tests
+        env:
+          TEST_MYSQL: "1"
+          TEST_REDIS: "1"
+          MYSQL_HOST: 127.0.0.1
+          MYSQL_USER: root
+          MYSQL_PASSWORD: test
+        run: cargo test -- --ignored
 
       - name: Check formatting
         run: cargo fmt -- --check

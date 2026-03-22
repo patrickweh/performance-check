@@ -305,9 +305,76 @@ mod tests {
 
     #[test]
     fn detect_mysql_cnf_nonexistent_dir() {
-        // /etc/mysql/conf.d may not exist in CI — should return None gracefully
         let result = detect_mysql_cnf();
-        // Just verify it doesn't panic; result depends on environment
         let _ = result;
+    }
+
+    // --- Additional format_bytes edge cases ---
+
+    #[test]
+    fn format_bytes_boundary_just_below_megabyte() {
+        // 1023K should stay as K
+        assert_eq!(format_bytes(1023 * 1024), "1023K");
+    }
+
+    #[test]
+    fn format_bytes_boundary_exactly_megabyte() {
+        assert_eq!(format_bytes(1024 * 1024), "1M");
+    }
+
+    #[test]
+    fn format_bytes_boundary_just_below_gigabyte() {
+        assert_eq!(format_bytes(1023 * 1024 * 1024), "1023M");
+    }
+
+    #[test]
+    fn format_bytes_boundary_exactly_gigabyte() {
+        assert_eq!(format_bytes(1024 * 1024 * 1024), "1G");
+    }
+
+    #[test]
+    fn format_bytes_just_below_kilobyte() {
+        assert_eq!(format_bytes(1023), "1023");
+    }
+
+    #[test]
+    fn format_bytes_exactly_kilobyte() {
+        assert_eq!(format_bytes(1024), "1K");
+    }
+
+    #[test]
+    fn format_bytes_common_mysql_values() {
+        // innodb_buffer_pool_size typical values
+        assert_eq!(format_bytes(128 * 1024 * 1024), "128M");
+        assert_eq!(format_bytes(256 * 1024 * 1024), "256M");
+        assert_eq!(format_bytes(512 * 1024 * 1024), "512M");
+        assert_eq!(format_bytes(768 * 1024 * 1024), "768M");
+        assert_eq!(format_bytes(1024 * 1024 * 1024), "1G");
+        assert_eq!(format_bytes(2 * 1024 * 1024 * 1024), "2G");
+        assert_eq!(format_bytes(4 * 1024 * 1024 * 1024), "4G");
+    }
+
+    #[test]
+    fn format_bytes_innodb_log_file_size() {
+        assert_eq!(format_bytes(48 * 1024 * 1024), "48M");
+        assert_eq!(format_bytes(256 * 1024 * 1024), "256M");
+        assert_eq!(format_bytes(512 * 1024 * 1024), "512M");
+    }
+
+    #[test]
+    fn format_bytes_tmp_table_size() {
+        assert_eq!(format_bytes(16 * 1024 * 1024), "16M");
+        assert_eq!(format_bytes(64 * 1024 * 1024), "64M");
+    }
+
+    #[test]
+    fn format_bytes_one_byte() {
+        assert_eq!(format_bytes(1), "1");
+    }
+
+    #[test]
+    fn format_bytes_integer_truncation() {
+        // 1.5G in bytes = 1610612736 → should show 1G (integer division)
+        assert_eq!(format_bytes(1024 * 1024 * 1024 + 512 * 1024 * 1024), "1G");
     }
 }
