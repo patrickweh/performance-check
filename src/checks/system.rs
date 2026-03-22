@@ -29,13 +29,19 @@ pub fn gather(app_path: &str) -> (SystemContext, Vec<CheckResult>) {
     if mysql_running {
         results.push(CheckResult::info(
             "MySQL/MariaDB",
-            format!("Running (PID {}, ~{mysql_ram_mb}MB RSS)", mysql_pid.unwrap_or(0)),
+            format!(
+                "Running (PID {}, ~{mysql_ram_mb}MB RSS)",
+                mysql_pid.unwrap_or(0)
+            ),
         ));
     }
     if redis_running {
         results.push(CheckResult::info(
             "Redis",
-            format!("Running (PID {}, ~{redis_ram_mb}MB RSS)", redis_pid.unwrap_or(0)),
+            format!(
+                "Running (PID {}, ~{redis_ram_mb}MB RSS)",
+                redis_pid.unwrap_or(0)
+            ),
         ));
     }
 
@@ -126,7 +132,7 @@ fn detect_service(names: &[&str]) -> (bool, Option<u32>, u64) {
         };
         let comm = comm.trim();
 
-        if names.iter().any(|n| comm == *n) {
+        if names.contains(&comm) {
             let rss_mb = read_process_rss(pid);
             return (true, Some(pid), rss_mb);
         }
@@ -166,6 +172,9 @@ fn detect_laravel_version(app_path: &str) -> (Option<String>, Option<u32>) {
         Some(m) => m.as_str().to_string(),
         None => return (None, None),
     };
-    let major = version.split('.').next().and_then(|v| v.parse::<u32>().ok());
+    let major = version
+        .split('.')
+        .next()
+        .and_then(|v| v.parse::<u32>().ok());
     (Some(version), major)
 }

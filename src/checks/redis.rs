@@ -10,7 +10,7 @@ pub fn check(ctx: &SystemContext) -> Vec<CheckResult> {
 
     // maxmemory
     let maxmem = redis_config_get("maxmemory");
-    let recommended_mb = ((ctx.total_ram_mb / 10) as u64).min(4096);
+    let recommended_mb = (ctx.total_ram_mb / 10).min(4096);
 
     match maxmem.as_deref() {
         Some("0") | None => {
@@ -37,10 +37,7 @@ pub fn check(ctx: &SystemContext) -> Vec<CheckResult> {
     let policy = redis_config_get("maxmemory-policy");
     match policy.as_deref() {
         Some("allkeys-lru") | Some("allkeys-lfu") => {
-            results.push(CheckResult::ok(
-                "Redis maxmemory-policy",
-                policy.unwrap(),
-            ));
+            results.push(CheckResult::ok("Redis maxmemory-policy", policy.unwrap()));
         }
         Some(v) => {
             results.push(

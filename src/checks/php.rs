@@ -3,7 +3,14 @@ use std::path::Path;
 use std::process::Command;
 
 const REQUIRED_EXTENSIONS: &[&str] = &[
-    "bcmath", "pdo", "pdo_mysql", "redis", "gd", "intl", "zip", "opcache",
+    "bcmath",
+    "pdo",
+    "pdo_mysql",
+    "redis",
+    "gd",
+    "intl",
+    "zip",
+    "opcache",
 ];
 
 pub fn check(frankenphp_bin: &str, php_ini: &str, ctx: &SystemContext) -> Vec<CheckResult> {
@@ -11,7 +18,10 @@ pub fn check(frankenphp_bin: &str, php_ini: &str, ctx: &SystemContext) -> Vec<Ch
 
     // php.ini exists
     if Path::new(php_ini).exists() {
-        results.push(CheckResult::ok("PHP-ZTS php.ini", format!("{php_ini} found")));
+        results.push(CheckResult::ok(
+            "PHP-ZTS php.ini",
+            format!("{php_ini} found"),
+        ));
     } else {
         results.push(CheckResult::fail(
             "PHP-ZTS php.ini",
@@ -31,10 +41,7 @@ pub fn check(frankenphp_bin: &str, php_ini: &str, ctx: &SystemContext) -> Vec<Ch
         let loaded = php_eval(frankenphp_bin, &check_code);
         match loaded.as_deref() {
             Some("1") => {
-                results.push(CheckResult::ok(
-                    format!("PHP ext: {ext}"),
-                    "loaded",
-                ));
+                results.push(CheckResult::ok(format!("PHP ext: {ext}"), "loaded"));
             }
             _ => {
                 results.push(CheckResult::fail(
@@ -46,20 +53,47 @@ pub fn check(frankenphp_bin: &str, php_ini: &str, ctx: &SystemContext) -> Vec<Ch
     }
 
     // OPcache settings
-    check_ini_bool(frankenphp_bin, php_ini, "opcache.enable", true, &mut results);
-    check_ini_bool(frankenphp_bin, php_ini, "opcache.validate_timestamps", false, &mut results);
-    check_ini_min(frankenphp_bin, php_ini, "opcache.memory_consumption", 256, &mut results);
-    check_ini_min(frankenphp_bin, php_ini, "opcache.max_accelerated_files", 20000, &mut results);
-    check_ini_min(frankenphp_bin, php_ini, "opcache.interned_strings_buffer", 32, &mut results);
+    check_ini_bool(
+        frankenphp_bin,
+        php_ini,
+        "opcache.enable",
+        true,
+        &mut results,
+    );
+    check_ini_bool(
+        frankenphp_bin,
+        php_ini,
+        "opcache.validate_timestamps",
+        false,
+        &mut results,
+    );
+    check_ini_min(
+        frankenphp_bin,
+        php_ini,
+        "opcache.memory_consumption",
+        256,
+        &mut results,
+    );
+    check_ini_min(
+        frankenphp_bin,
+        php_ini,
+        "opcache.max_accelerated_files",
+        20000,
+        &mut results,
+    );
+    check_ini_min(
+        frankenphp_bin,
+        php_ini,
+        "opcache.interned_strings_buffer",
+        32,
+        &mut results,
+    );
 
     // opcache.jit_buffer_size
     let jit = get_ini(frankenphp_bin, "opcache.jit_buffer_size");
     match jit.as_deref() {
         Some(v) if !v.is_empty() && v != "0" => {
-            results.push(CheckResult::ok(
-                "opcache.jit_buffer_size",
-                format!("{v}"),
-            ));
+            results.push(CheckResult::ok("opcache.jit_buffer_size", v.to_string()));
         }
         _ => {
             results.push(
@@ -86,7 +120,10 @@ pub fn check(frankenphp_bin: &str, php_ini: &str, ctx: &SystemContext) -> Vec<Ch
             ));
         }
         _ => {
-            results.push(CheckResult::ok("opcache.preload", "Not set (correct for Octane)"));
+            results.push(CheckResult::ok(
+                "opcache.preload",
+                "Not set (correct for Octane)",
+            ));
         }
     }
 
@@ -113,8 +150,11 @@ pub fn check(frankenphp_bin: &str, php_ini: &str, ctx: &SystemContext) -> Vec<Ch
         }
         _ => {
             results.push(
-                CheckResult::warn("realpath_cache_size", "Not set — recommend 4096K")
-                    .with_fix("Set realpath_cache_size=4096K", php_ini, "realpath_cache_size=4096K"),
+                CheckResult::warn("realpath_cache_size", "Not set — recommend 4096K").with_fix(
+                    "Set realpath_cache_size=4096K",
+                    php_ini,
+                    "realpath_cache_size=4096K",
+                ),
             );
         }
     }
@@ -122,21 +162,14 @@ pub fn check(frankenphp_bin: &str, php_ini: &str, ctx: &SystemContext) -> Vec<Ch
     let rp_ttl = get_ini_int(frankenphp_bin, "realpath_cache_ttl");
     if rp_ttl < 300 {
         results.push(
-            CheckResult::warn(
-                "realpath_cache_ttl",
-                format!("{rp_ttl} — recommend ≥600"),
-            )
-            .with_fix(
+            CheckResult::warn("realpath_cache_ttl", format!("{rp_ttl} — recommend ≥600")).with_fix(
                 "Set realpath_cache_ttl=600",
                 php_ini,
                 "realpath_cache_ttl=600",
             ),
         );
     } else {
-        results.push(CheckResult::ok(
-            "realpath_cache_ttl",
-            format!("{rp_ttl}"),
-        ));
+        results.push(CheckResult::ok("realpath_cache_ttl", format!("{rp_ttl}")));
     }
 
     // memory_limit
@@ -155,7 +188,7 @@ pub fn check(frankenphp_bin: &str, php_ini: &str, ctx: &SystemContext) -> Vec<Ch
             }
 
             // Check if total worker memory could exceed budget
-            let worker_total = mb as u64 * ctx.cpu_cores as u64;
+            let worker_total = mb * ctx.cpu_cores as u64;
             if worker_total > ctx.php_ram_budget_mb {
                 results.push(CheckResult::warn(
                     "Worker Memory Risk",
@@ -203,7 +236,10 @@ fn check_ini_bool(
     let val = get_ini(frankenphp_bin, key);
     let is_on = matches!(val.as_deref(), Some("1") | Some("On") | Some("on"));
     if is_on == expected {
-        results.push(CheckResult::ok(key, format!("{}", if is_on { "On" } else { "Off" })));
+        results.push(CheckResult::ok(
+            key,
+            (if is_on { "On" } else { "Off" }).to_string(),
+        ));
     } else {
         let expected_val = if expected { "1" } else { "0" };
         results.push(
@@ -235,11 +271,7 @@ fn check_ini_min(
         results.push(CheckResult::ok(key, format!("{val}")));
     } else {
         results.push(
-            CheckResult::fail(
-                key,
-                format!("{val} — should be ≥{min}"),
-            )
-            .with_fix(
+            CheckResult::fail(key, format!("{val} — should be ≥{min}")).with_fix(
                 format!("Set {key}={min}"),
                 php_ini,
                 format!("{key}={min}"),
@@ -258,5 +290,107 @@ fn parse_php_size(val: &str) -> u64 {
         val[..val.len() - 1].parse::<u64>().unwrap_or(0) * 1024
     } else {
         val.parse::<u64>().unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_php_size_gigabytes() {
+        assert_eq!(parse_php_size("2G"), 2 * 1024 * 1024 * 1024);
+        assert_eq!(parse_php_size("1g"), 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_php_size_megabytes() {
+        assert_eq!(parse_php_size("256M"), 256 * 1024 * 1024);
+        assert_eq!(parse_php_size("128m"), 128 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_php_size_kilobytes() {
+        assert_eq!(parse_php_size("4096K"), 4096 * 1024);
+        assert_eq!(parse_php_size("512k"), 512 * 1024);
+    }
+
+    #[test]
+    fn parse_php_size_bytes() {
+        assert_eq!(parse_php_size("65536"), 65536);
+    }
+
+    #[test]
+    fn parse_php_size_with_whitespace() {
+        assert_eq!(parse_php_size("  128M  "), 128 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_php_size_invalid() {
+        assert_eq!(parse_php_size("abc"), 0);
+        assert_eq!(parse_php_size(""), 0);
+    }
+
+    #[test]
+    fn required_extensions_list() {
+        assert!(REQUIRED_EXTENSIONS.contains(&"opcache"));
+        assert!(REQUIRED_EXTENSIONS.contains(&"pdo_mysql"));
+        assert!(REQUIRED_EXTENSIONS.contains(&"redis"));
+        assert_eq!(REQUIRED_EXTENSIONS.len(), 8);
+    }
+
+    // --- Additional parse_php_size edge cases ---
+
+    #[test]
+    fn parse_php_size_zero() {
+        assert_eq!(parse_php_size("0"), 0);
+        assert_eq!(parse_php_size("0K"), 0);
+        assert_eq!(parse_php_size("0M"), 0);
+        assert_eq!(parse_php_size("0G"), 0);
+    }
+
+    #[test]
+    fn parse_php_size_one_byte() {
+        assert_eq!(parse_php_size("1"), 1);
+    }
+
+    #[test]
+    fn parse_php_size_only_suffix() {
+        assert_eq!(parse_php_size("M"), 0);
+        assert_eq!(parse_php_size("G"), 0);
+        assert_eq!(parse_php_size("K"), 0);
+    }
+
+    #[test]
+    fn parse_php_size_negative() {
+        // PHP doesn't use negative sizes, but our parser should handle gracefully
+        assert_eq!(parse_php_size("-1M"), 0);
+    }
+
+    #[test]
+    fn parse_php_size_common_php_values() {
+        // Common php.ini values
+        assert_eq!(parse_php_size("128M"), 128 * 1024 * 1024);
+        assert_eq!(parse_php_size("256M"), 256 * 1024 * 1024);
+        assert_eq!(parse_php_size("512M"), 512 * 1024 * 1024);
+        assert_eq!(parse_php_size("1G"), 1024 * 1024 * 1024);
+        assert_eq!(parse_php_size("4096K"), 4096 * 1024);
+        assert_eq!(parse_php_size("32M"), 32 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_php_size_realpath_cache_values() {
+        assert_eq!(parse_php_size("4096K"), 4 * 1024 * 1024);
+        assert_eq!(parse_php_size("16K"), 16 * 1024);
+    }
+
+    #[test]
+    fn parse_php_size_boundary_between_units() {
+        // 1024K = 1M
+        assert_eq!(parse_php_size("1024K"), 1024 * 1024);
+        assert_eq!(parse_php_size("1M"), 1024 * 1024);
+        // 1024M = 1G
+        assert_eq!(parse_php_size("1024M"), 1024 * 1024 * 1024);
+        assert_eq!(parse_php_size("1G"), 1024 * 1024 * 1024);
     }
 }

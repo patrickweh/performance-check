@@ -50,11 +50,7 @@ pub struct Metric {
 impl BenchmarkResult {
     pub fn display_summary(&self) {
         for m in &self.metrics {
-            println!(
-                "      {} {:.1}ms",
-                m.label.dimmed(),
-                m.value_ms
-            );
+            println!("      {} {:.1}ms", m.label.dimmed(), m.value_ms);
         }
     }
 
@@ -119,14 +115,14 @@ pub fn run_all(frankenphp_bin: &str, app_path: &str, ctx: &SystemContext) {
     match run_php_benchmark(frankenphp_bin, app_path, 5) {
         Some(result) => {
             for m in &result.metrics {
-                println!(
-                    "      {:<28} {:>8.1}ms",
-                    m.label, m.value_ms
-                );
+                println!("      {:<28} {:>8.1}ms", m.label, m.value_ms);
             }
         }
         None => {
-            println!("      {}", "Could not run PHP benchmark (is FrankenPHP available?)".yellow());
+            println!(
+                "      {}",
+                "Could not run PHP benchmark (is FrankenPHP available?)".yellow()
+            );
         }
     }
     println!();
@@ -141,10 +137,7 @@ pub fn run_all(frankenphp_bin: &str, app_path: &str, ctx: &SystemContext) {
             Some(result) => {
                 for m in &result.metrics {
                     if m.value_ms > 0.0 {
-                        println!(
-                            "      {:<28} {:>8.1}ms",
-                            m.label, m.value_ms
-                        );
+                        println!("      {:<28} {:>8.1}ms", m.label, m.value_ms);
                     } else {
                         // Non-timing metric (like buffer pool hit rate)
                         println!("      {}", m.label);
@@ -197,15 +190,9 @@ fn run_php_benchmark(
 }
 
 fn run_mysql_benchmark(iterations: u32) -> Option<BenchmarkResult> {
-    let select = measure_mysql_query(
-        "SELECT BENCHMARK(100000, MD5('benchmark'))",
-        iterations,
-    )?;
+    let select = measure_mysql_query("SELECT BENCHMARK(100000, MD5('benchmark'))", iterations)?;
 
-    let write = measure_mysql_query(
-        "DO BENCHMARK(100000, CRC32('benchmark'))",
-        iterations,
-    );
+    let write = measure_mysql_query("DO BENCHMARK(100000, CRC32('benchmark'))", iterations);
 
     let mut metrics = vec![Metric {
         label: "SELECT throughput".to_string(),
@@ -355,4 +342,88 @@ fn avg_ms(durations: &[Duration]) -> f64 {
     }
     let total: f64 = durations.iter().map(|d| d.as_secs_f64() * 1000.0).sum();
     total / durations.len() as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn benchmark_kind_from_php_ini() {
+        assert!(matches!(
+            BenchmarkKind::from_file("/etc/php-zts/php.ini"),
+            BenchmarkKind::Php
+        ));
+        assert!(matches!(
+            BenchmarkKind::from_file("/etc/php.ini"),
+            BenchmarkKind::Php
+        ));
+    }
+
+    #[test]
+    fn benchmark_kind_from_mysql_cnf() {
+        assert!(matches!(
+            BenchmarkKind::from_file("/etc/mysql/conf.d/custom.cnf"),
+            BenchmarkKind::Mysql
+        ));
+    }
+
+    #[test]
+    fn benchmark_kind_from_env() {
+        assert!(matches!(
+            BenchmarkKind::from_file("/home/forge/app/.env"),
+            BenchmarkKind::None
+        ));
+    }
+
+    #[test]
+    fn benchmark_kind_labels() {
+        assert_eq!(BenchmarkKind::Php.label(), "PHP Performance");
+        assert_eq!(BenchmarkKind::Mysql.label(), "MySQL Performance");
+        assert_eq!(BenchmarkKind::None.label(), "");
+    }
+
+    #[test]
+    fn avg_ms_single() {
+        let durations = vec![Duration::from_millis(100)];
+        let result = avg_ms(&durations);
+        assert!((result - 100.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn avg_ms_multiple() {
+        let durations = vec![
+            Duration::from_millis(100),
+            Duration::from_millis(200),
+            Duration::from_millis(300),
+        ];
+        let result = avg_ms(&durations);
+        assert!((result - 200.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn avg_ms_empty() {
+        assert_eq!(avg_ms(&[]), 0.0);
+    }
+
+    #[test]
+    fn benchmark_result_metrics() {
+        let result = BenchmarkResult {
+            kind: "Test",
+            metrics: vec![
+                Metric {
+                    label: "Cold Start".to_string(),
+                    value_ms: 150.0,
+                },
+                Metric {
+                    label: "Throughput".to_string(),
+                    value_ms: 45.5,
+                },
+            ],
+        };
+        assert_eq!(result.metrics.len(), 2);
+        assert_eq!(result.metrics[0].label, "Cold Start");
+        assert!((result.metrics[0].value_ms - 150.0).abs() < f64::EPSILON);
+    }
 }
