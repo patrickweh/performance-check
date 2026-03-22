@@ -413,6 +413,102 @@ fn write_fixes(file: &str, entries: &[(&CheckResult, &str)]) -> Result<usize, st
     Ok(applied)
 }
 
+/// Variables that can NOT be changed at runtime via SET GLOBAL (require restart).
+const STATIC_MYSQL_VARS: &[&str] = &["innodb_log_file_size"];
+
+/// Parse a CNF value suffix (M, G, K) into bytes for SET GLOBAL.
+fn cnf_value_to_set_global(value: &str) -> String {
+    let value = value.trim();
+    if let Some(num) = value.strip_suffix('G') {
+        if let Ok(n) = num.parse::<u64>() {
+            return (n * 1024 * 1024 * 1024).to_string();
+        }
+    }
+    if let Some(num) = value.strip_suffix('M') {
+        if let Ok(n) = num.parse::<u64>() {
+            return (n * 1024 * 1024).to_string();
+        }
+    }
+    if let Some(num) = value.strip_suffix('K') {
+        if let Ok(n) = num.parse::<u64>() {
+            return (n * 1024).to_string();
+        }
+    }
+    value.to_string()
+}
+
+/// Apply MySQL variables at runtime via SET GLOBAL.
+/// Returns a list of (variable, old_value) for rollback.
+fn apply_mysql_runtime(entries: &[(&CheckResult, &str)]) -> Vec<(String, String)> {
+    let mut backups = Vec::new();
+
+    for (_r, fix_content) in entries {
+        for line in fix_content.lines() {
+            if let Some((key, value)) = line.split_once('=') {
+                let key = key.trim();
+                let value = value.trim();
+
+                if STATIC_MYSQL_VARS.contains(&key) {
+                    continue;
+                }
+
+                // Backup current value
+                let backup_query = format!("SELECT @@global.{key}");
+                let old_value = mysql_query_internal(&backup_query);
+                if let Some(ref old) = old_value {
+                    backups.push((key.to_string(), old.clone()));
+                }
+
+                // Apply via SET GLOBAL
+                let set_value = cnf_value_to_set_global(value);
+                let set_query = format!("SET GLOBAL {key} = {set_value}");
+                let _ = mysql_query_internal(&set_query);
+            }
+        }
+    }
+
+    backups
+}
+
+/// Apply MySQL variables at runtime silently (no output). Used during benchmark flow.
+fn apply_mysql_runtime_silent(entries: &[(&CheckResult, &str)]) -> Vec<(String, String)> {
+    apply_mysql_runtime(entries)
+}
+
+/// Restore MySQL runtime variables from backups.
+fn restore_mysql_runtime(backups: &[(String, String)]) {
+    for (key, value) in backups {
+        let set_value = cnf_value_to_set_global(value);
+        let set_query = format!("SET GLOBAL {key} = {set_value}");
+        let _ = mysql_query_internal(&set_query);
+    }
+}
+
+/// Internal mysql query helper (reuses the same connection logic as checks).
+fn mysql_query_internal(query: &str) -> Option<String> {
+    let output = Command::new("mysql")
+        .args([
+            "--defaults-file=/etc/mysql/debian.cnf",
+            "-N",
+            "-B",
+            "-e",
+            query,
+        ])
+        .output()
+        .or_else(|_| {
+            Command::new("mysql")
+                .args(["-u", "root", "-N", "-B", "-e", query])
+                .output()
+        })
+        .ok()?;
+
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
 /// Apply Redis fixes via redis-cli CONFIG SET, then CONFIG REWRITE to persist.
 fn apply_redis_fixes(entries: &[(&CheckResult, &str)]) {
     let mut any_failed = false;
@@ -774,9 +870,28 @@ pub fn propose_full_benchmark_fixes(
     }
 
     // Apply file fixes
+    let mut mysql_runtime_backups: Vec<(String, String)> = Vec::new();
     for (file, entries) in &file_fixes {
         apply_file_fixes_silent(file, entries);
         println!("    {} {file}", "Applied".green());
+
+        // For MySQL CNF files, also apply changes at runtime via SET GLOBAL
+        let is_mysql_cnf =
+            file.ends_with(".cnf") && (file.contains("mysql") || file.contains("mariadb"));
+        if is_mysql_cnf {
+            let backups = apply_mysql_runtime_silent(entries);
+            if !backups.is_empty() {
+                println!(
+                    "    {}",
+                    format!(
+                        "Applied {} variable(s) at runtime (SET GLOBAL)",
+                        backups.len()
+                    )
+                    .green()
+                );
+            }
+            mysql_runtime_backups.extend(backups);
+        }
     }
 
     // Apply Redis fixes
@@ -866,10 +981,18 @@ pub fn propose_full_benchmark_fixes(
             }
 
             println!();
-            println!(
-                "    {}",
-                "Restart FrankenPHP and MySQL for changes to take effect.".yellow()
-            );
+            if mysql_runtime_backups.is_empty() {
+                println!(
+                    "    {}",
+                    "Restart FrankenPHP and MySQL for changes to take effect.".yellow()
+                );
+            } else {
+                println!(
+                    "    {}",
+                    "MySQL runtime variables are already active. Restart FrankenPHP for remaining changes."
+                        .yellow()
+                );
+            }
         }
         _ => {
             println!();
@@ -895,6 +1018,16 @@ pub fn propose_full_benchmark_fixes(
                         }
                     }
                 }
+            }
+
+            // Rollback MySQL runtime variables
+            if !mysql_runtime_backups.is_empty() {
+                restore_mysql_runtime(&mysql_runtime_backups);
+                println!(
+                    "    {} MySQL runtime ({} variable(s))",
+                    "Restored".green(),
+                    mysql_runtime_backups.len()
+                );
             }
 
             // Rollback Redis
@@ -1419,5 +1552,51 @@ mod tests {
             BenchmarkKind::from_file("/etc/systemd/system/frankenphp.service.d/override.conf"),
             BenchmarkKind::None
         ));
+    }
+
+    // --- cnf_value_to_set_global tests ---
+
+    #[test]
+    fn cnf_value_gigabytes() {
+        assert_eq!(
+            cnf_value_to_set_global("2G"),
+            (2u64 * 1024 * 1024 * 1024).to_string()
+        );
+    }
+
+    #[test]
+    fn cnf_value_megabytes() {
+        assert_eq!(
+            cnf_value_to_set_global("768M"),
+            (768u64 * 1024 * 1024).to_string()
+        );
+    }
+
+    #[test]
+    fn cnf_value_kilobytes() {
+        assert_eq!(cnf_value_to_set_global("512K"), (512u64 * 1024).to_string());
+    }
+
+    #[test]
+    fn cnf_value_plain_number() {
+        assert_eq!(cnf_value_to_set_global("200"), "200");
+    }
+
+    #[test]
+    fn cnf_value_zero() {
+        assert_eq!(cnf_value_to_set_global("0"), "0");
+    }
+
+    #[test]
+    fn cnf_value_with_whitespace() {
+        assert_eq!(
+            cnf_value_to_set_global(" 256M "),
+            (256u64 * 1024 * 1024).to_string()
+        );
+    }
+
+    #[test]
+    fn static_mysql_vars_contains_log_file_size() {
+        assert!(STATIC_MYSQL_VARS.contains(&"innodb_log_file_size"));
     }
 }
