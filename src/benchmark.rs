@@ -425,35 +425,48 @@ fn php_eval_float(frankenphp_bin: &str, code: &str) -> Option<f64> {
 fn detect_http_port(octane_ports: &OctanePorts) -> Option<(String, u16, bool)> {
     let host = octane_ports.host.as_deref().unwrap_or("127.0.0.1");
 
-    // If supervisor config specifies the HTTP port, try it first
+    // Collect candidate ports in priority order
+    let mut ports: Vec<u16> = Vec::new();
+
     if let Some(port) = octane_ports.http_port {
-        let is_https = port == 443 || port == 8443;
-        if TcpStream::connect_timeout(
-            &format!("{host}:{port}").parse().unwrap(),
-            Duration::from_millis(200),
-        )
-        .is_ok()
-        {
-            return Some((host.to_string(), port, is_https));
+        ports.push(port);
+    }
+    if let Some(port) = detect_port_from_admin_api(octane_ports) {
+        if !ports.contains(&port) {
+            ports.push(port);
+        }
+    }
+    for default in [443u16, 8000, 8443, 80] {
+        if !ports.contains(&default) {
+            ports.push(default);
         }
     }
 
-    // Check admin API for server listen address
-    if let Some(port) = detect_port_from_admin_api(octane_ports) {
-        return Some((host.to_string(), port, port == 443 || port == 8443));
-    }
-
-    // Try common ports as fallback
-    let candidates = [(443, true), (8000, false), (8443, true), (80, false)];
-
-    for (port, is_https) in candidates {
+    // For each candidate, probe whether it speaks HTTPS or HTTP.
+    // Caddy auto-HTTPS means even port 8000 can be TLS.
+    for port in ports {
         if TcpStream::connect_timeout(
             &format!("{host}:{port}").parse().unwrap(),
             Duration::from_millis(200),
         )
-        .is_ok()
+        .is_err()
         {
-            return Some((host.to_string(), port, is_https));
+            continue;
+        }
+
+        // Probe HTTPS first (Caddy default with auto-HTTPS), then HTTP.
+        if curl_status_code(&format!("https://{host}:{port}/up"), false).is_some() {
+            return Some((host.to_string(), port, true));
+        }
+        if curl_status_code(&format!("http://{host}:{port}/up"), false).is_some() {
+            return Some((host.to_string(), port, false));
+        }
+        // Try root path as fallback
+        if curl_status_code(&format!("https://{host}:{port}/"), false).is_some() {
+            return Some((host.to_string(), port, true));
+        }
+        if curl_status_code(&format!("http://{host}:{port}/"), false).is_some() {
+            return Some((host.to_string(), port, false));
         }
     }
 
@@ -536,7 +549,14 @@ fn run_http_load_test(
         format!("{scheme}://{host}:{port}/"),
     ];
 
-    for url in &candidates {
+    // Collect all URLs to try (original scheme + HTTPS fallback)
+    let mut all_urls = candidates.to_vec();
+    if !is_https {
+        all_urls.push(format!("https://{host}:{port}/up"));
+        all_urls.push(format!("https://{host}:{port}/"));
+    }
+
+    for url in &all_urls {
         // First try without following redirects
         if let Some(status) = curl_status_code(url, false) {
             if status.starts_with('2') || status.starts_with('3') {
@@ -545,24 +565,19 @@ fn run_http_load_test(
         }
         // Then try following redirects (e.g. HTTP → HTTPS redirect)
         if let Some(status) = curl_status_code(url, true) {
-            if status.starts_with('2') {
+            if status.starts_with('2') || status.starts_with('3') {
                 return run_http_load_test_inner(url, total_requests, concurrency);
             }
         }
     }
 
-    // Last resort: try HTTPS on the same port (Caddy often auto-redirects HTTP → HTTPS)
-    if !is_https {
-        let https_candidates = [
-            format!("https://{host}:{port}/up"),
-            format!("https://{host}:{port}/"),
-        ];
-        for url in &https_candidates {
-            if let Some(status) = curl_status_code(url, false) {
-                if status.starts_with('2') || status.starts_with('3') {
-                    return run_http_load_test_inner(url, total_requests, concurrency);
-                }
-            }
+    // Log what we tried for diagnostics
+    eprintln!("[debug] HTTP load test: no reachable endpoint found");
+    for url in &all_urls {
+        if let Some(status) = curl_status_code(url, true) {
+            eprintln!("[debug]   {url} → HTTP {status}");
+        } else {
+            eprintln!("[debug]   {url} → connection failed");
         }
     }
 
@@ -570,13 +585,14 @@ fn run_http_load_test(
 }
 
 /// Probe a URL with curl and return the HTTP status code.
+/// Short timeouts to avoid hanging on protocol mismatches (HTTP vs HTTPS).
 fn curl_status_code(url: &str, follow_redirects: bool) -> Option<String> {
     let mut args = vec![
         "-sk",
         "--connect-timeout",
-        "3",
+        "2",
         "--max-time",
-        "5",
+        "3",
         "-o",
         "/dev/null",
         "-w",
@@ -747,20 +763,18 @@ pub fn get_num_threads(admin_port: u16) -> Option<u32> {
     let output = Command::new("curl")
         .args([
             "-s",
-            "-f",
             "--connect-timeout",
-            "1",
-            "--max-time",
             "2",
+            "--max-time",
+            "3",
             &format!("http://localhost:{admin_port}/config/apps/frankenphp/num_threads"),
         ])
         .output()
         .ok()?;
 
-    if !output.status.success() {
-        return None;
-    }
-
+    // Response is a naked JSON value: "null" (not set) or a number like "12".
+    // We only care about the body content, not the exit code — FrankenPHP
+    // sometimes closes connections unexpectedly during config reloads.
     String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
@@ -770,14 +784,13 @@ pub fn get_num_threads(admin_port: u16) -> Option<u32> {
 /// exists or not, as long as the parent object exists.
 pub fn set_num_threads(admin_port: u16, value: u32) -> bool {
     // POST with a naked value on the specific path — creates or replaces.
-    // Use -w to get the HTTP status code, -o /dev/null to suppress body.
-    let output = Command::new("curl")
+    //
+    // FrankenPHP may close the connection without sending an HTTP response when
+    // it restarts PHP threads after a num_threads change. So we cannot rely on
+    // the HTTP status code. Instead, fire the POST and verify via GET.
+    let _ = Command::new("curl")
         .args([
             "-s",
-            "-o",
-            "/dev/null",
-            "-w",
-            "%{http_code}",
             "-X",
             "POST",
             "--connect-timeout",
@@ -792,14 +805,11 @@ pub fn set_num_threads(admin_port: u16, value: u32) -> bool {
         ])
         .output();
 
-    if let Ok(ref o) = output {
-        let status = String::from_utf8_lossy(&o.stdout);
-        if status.trim() == "200" {
-            return true;
-        }
-    }
+    // FrankenPHP needs a moment to restart threads after config change.
+    std::thread::sleep(Duration::from_millis(500));
 
-    false
+    // Verify via GET — the only reliable way to confirm.
+    get_num_threads(admin_port) == Some(value)
 }
 
 /// Delete num_threads from admin API config (restores built-in default).
