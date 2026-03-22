@@ -113,10 +113,42 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Upload binary
+      - name: Package binary
+        run: |
+          cp target/${{ matrix.target }}/release/frankenphp-check ${{ matrix.name }}
+          chmod +x ${{ matrix.name }}
+
+      - name: Upload artifact
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: target/${{ matrix.target }}/release/frankenphp-check
+          path: ${{ matrix.name }}
           retention-days: 90
+
+  # Update the "latest" rolling release on every merge to main
+  rolling-release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Update latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest Build (main)
+          body: |
+            Rolling release — automatically updated on every merge to main.
+            Last updated from commit ${{ github.sha }}.
+          prerelease: true
+          files: |
+            frankenphp-check-linux-amd64/frankenphp-check-linux-amd64
+            frankenphp-check-linux-arm64/frankenphp-check-linux-arm64
