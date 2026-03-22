@@ -1,3 +1,4 @@
+use crate::types::SystemContext;
 use colored::Colorize;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -99,6 +100,60 @@ impl BenchmarkResult {
                 "    {:<28} {:>8.1}ms {:>8.1}ms   {}",
                 b.label, b.value_ms, a.value_ms, change
             );
+        }
+        println!();
+    }
+}
+
+/// Run all available benchmarks standalone (--bench flag).
+pub fn run_all(frankenphp_bin: &str, app_path: &str, ctx: &SystemContext) {
+    println!();
+    println!("  {}", "Benchmarks".bold().underline());
+    println!();
+
+    // PHP benchmark
+    println!("    {}", "PHP Performance".bold());
+    println!("    {}", "Running 5 iterations...".dimmed());
+    println!();
+
+    match run_php_benchmark(frankenphp_bin, app_path, 5) {
+        Some(result) => {
+            for m in &result.metrics {
+                println!(
+                    "      {:<28} {:>8.1}ms",
+                    m.label, m.value_ms
+                );
+            }
+        }
+        None => {
+            println!("      {}", "Could not run PHP benchmark (is FrankenPHP available?)".yellow());
+        }
+    }
+    println!();
+
+    // MySQL benchmark
+    if ctx.mysql_running {
+        println!("    {}", "MySQL Performance".bold());
+        println!("    {}", "Running 5 iterations...".dimmed());
+        println!();
+
+        match run_mysql_benchmark(5) {
+            Some(result) => {
+                for m in &result.metrics {
+                    if m.value_ms > 0.0 {
+                        println!(
+                            "      {:<28} {:>8.1}ms",
+                            m.label, m.value_ms
+                        );
+                    } else {
+                        // Non-timing metric (like buffer pool hit rate)
+                        println!("      {}", m.label);
+                    }
+                }
+            }
+            None => {
+                println!("      {}", "Could not run MySQL benchmark".yellow());
+            }
         }
         println!();
     }

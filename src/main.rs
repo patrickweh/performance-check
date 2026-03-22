@@ -33,6 +33,10 @@ struct Cli {
     /// Interactively apply suggested fixes
     #[arg(long)]
     fix: bool,
+
+    /// Run all benchmarks (PHP + MySQL) without applying fixes
+    #[arg(long)]
+    bench: bool,
 }
 
 fn main() {
@@ -99,6 +103,11 @@ fn main() {
 
         // Output
         output::print_results(&all_results, !cli.no_color, cli.json);
+
+        // Standalone benchmarks
+        if cli.bench && !cli.json {
+            benchmark::run_all(&cli.frankenphp, app_path, &ctx);
+        }
 
         // Interactive fixes
         if cli.fix && !cli.json {
