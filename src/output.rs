@@ -12,48 +12,189 @@ pub fn print_results(results: &[CheckResult], use_color: bool, json: bool) {
         colored::control::set_override(false);
     }
 
+    // Header
     println!();
-    println!("{}", "═══ FrankenPHP + Laravel Performance Check ═══".bold());
+    println!(
+        "  {}",
+        "FrankenPHP + Laravel Performance Check"
+            .bold()
+            .underline()
+    );
     println!();
 
-    for r in results {
-        let prefix = match r.status {
-            Status::Ok => "OK  ".green().bold(),
-            Status::Warn => "WARN".yellow().bold(),
-            Status::Fail => "FAIL".red().bold(),
-            Status::Info => "INFO".blue().bold(),
-        };
+    // Group results by section
+    let sections = group_by_section(results);
 
-        if r.status == Status::Info {
-            println!("{prefix} {}: {}", r.label.bold(), r.detail);
-        } else {
-            println!("{prefix} {}  ({})", r.label.bold(), r.detail);
+    for (section_name, section_results) in &sections {
+        println!("  {}", section_name.dimmed().bold());
+        println!();
+
+        for r in section_results {
+            let (icon, colored_icon) = match r.status {
+                Status::Ok => ("  ", "  ".green()),
+                Status::Warn => ("  ", "  ".yellow()),
+                Status::Fail => ("  ", "  ".red()),
+                Status::Info => ("  ", "  ".blue()),
+            };
+
+            let _ = icon; // suppress unused warning
+            let status_badge = match r.status {
+                Status::Ok => " PASS ".on_green().white().bold(),
+                Status::Warn => " WARN ".on_yellow().black().bold(),
+                Status::Fail => " FAIL ".on_red().white().bold(),
+                Status::Info => " INFO ".on_blue().white().bold(),
+            };
+
+            if r.status == Status::Info {
+                println!(
+                    "  {} {}{} {}",
+                    colored_icon,
+                    status_badge,
+                    format!(" {}", r.label).bold(),
+                    format!(" {}", r.detail).dimmed()
+                );
+            } else {
+                println!(
+                    "  {} {} {}",
+                    colored_icon,
+                    status_badge,
+                    format!(" {}", r.label).bold(),
+                );
+                if !r.detail.is_empty() {
+                    println!(
+                        "          {}",
+                        r.detail.dimmed()
+                    );
+                }
+            }
+        }
+        println!();
+    }
+
+    // Summary bar
+    let (ok, warn, fail) = count_statuses(results);
+    let total = results.len();
+
+    println!("  {}", "Results".bold().underline());
+    println!();
+
+    let pass_bar = make_bar(ok, total, "green");
+    let warn_bar = make_bar(warn, total, "yellow");
+    let fail_bar = make_bar(fail, total, "red");
+
+    println!(
+        "    {} Pass: {}  {} Warn: {}  {} Fail: {}",
+        pass_bar,
+        format!("{ok}").green().bold(),
+        warn_bar,
+        format!("{warn}").yellow().bold(),
+        fail_bar,
+        format!("{fail}").red().bold(),
+    );
+    println!();
+
+    // Score
+    let score = if total > 0 {
+        ((ok as f64 / (ok + warn + fail).max(1) as f64) * 100.0) as u32
+    } else {
+        100
+    };
+
+    let score_color = if score >= 80 {
+        format!("{score}%").green().bold()
+    } else if score >= 50 {
+        format!("{score}%").yellow().bold()
+    } else {
+        format!("{score}%").red().bold()
+    };
+
+    println!("    Score: {score_color}");
+    println!();
+
+    // Recommended values summary
+    print_recommended_values(results);
+}
+
+fn group_by_section(results: &[CheckResult]) -> Vec<(&'static str, Vec<&CheckResult>)> {
+    let mut sections: Vec<(&str, Vec<&CheckResult>)> = Vec::new();
+
+    let section_map: &[(&[&str], &str)] = &[
+        (&["CPU Cores", "Memory", "Swap Usage", "PHP RAM Budget", "Laravel Version", "MySQL/MariaDB", "Redis"], "System"),
+        (&["libc"], "Runtime"),
+        (&["FrankenPHP Binary", "FrankenPHP Version"], "FrankenPHP"),
+        (&["PHP-ZTS", "PHP ext:"], "PHP Extensions"),
+        (&["opcache.", "realpath_cache", "memory_limit", "Worker Memory"], "PHP Configuration"),
+        (&["GODEBUG", "GOMEMLIMIT"], "Go Runtime"),
+        (&["APP_ENV", "APP_DEBUG", "OCTANE_HTTPS", "CACHE_STORE", "QUEUE_CONNECTION", "SESSION_DRIVER", "LOG_CHANNEL"], "Laravel Environment"),
+        (&["Bootstrap Cache", "composer"], "Laravel Application"),
+        (&["MySQL Version", "innodb_", "query_cache", "slow_query", "long_query", "max_connections", "tmp_table"], "MySQL / MariaDB"),
+        (&["Redis"], "Redis"),
+    ];
+
+    let mut assigned: Vec<bool> = vec![false; results.len()];
+
+    for (prefixes, section_name) in section_map {
+        let mut section_results = Vec::new();
+        for (i, r) in results.iter().enumerate() {
+            if assigned[i] {
+                continue;
+            }
+            if prefixes.iter().any(|p| r.label.starts_with(p)) {
+                section_results.push(r);
+                assigned[i] = true;
+            }
+        }
+        if !section_results.is_empty() {
+            sections.push((section_name, section_results));
         }
     }
 
-    // Summary
-    let (ok, warn, fail) = count_statuses(results);
-    println!();
-    println!("{}", "─".repeat(50));
-    println!(
-        "Pass: {}  Warn: {}  Fail: {}",
-        format!("{ok}").green().bold(),
-        format!("{warn}").yellow().bold(),
-        format!("{fail}").red().bold(),
-    );
+    // Collect unassigned into "Other"
+    let other: Vec<&CheckResult> = results
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !assigned[*i])
+        .map(|(_, r)| r)
+        .collect();
+    if !other.is_empty() {
+        sections.push(("Other", other));
+    }
 
-    // Recommended values summary
-    print_recommended_values(results, use_color);
+    sections
 }
 
 fn count_statuses(results: &[CheckResult]) -> (usize, usize, usize) {
     let ok = results.iter().filter(|r| r.status == Status::Ok).count();
-    let warn = results.iter().filter(|r| r.status == Status::Warn).count();
-    let fail = results.iter().filter(|r| r.status == Status::Fail).count();
+    let warn = results
+        .iter()
+        .filter(|r| r.status == Status::Warn)
+        .count();
+    let fail = results
+        .iter()
+        .filter(|r| r.status == Status::Fail)
+        .count();
     (ok, warn, fail)
 }
 
-fn print_recommended_values(results: &[CheckResult], _use_color: bool) {
+fn make_bar(count: usize, total: usize, color: &str) -> String {
+    let width = 8;
+    let filled = if total > 0 {
+        (count * width / total).max(if count > 0 { 1 } else { 0 })
+    } else {
+        0
+    };
+    let bar: String = std::iter::repeat_n('█', filled)
+        .chain(std::iter::repeat_n('░', width - filled))
+        .collect();
+    match color {
+        "green" => format!("{}", bar.green()),
+        "yellow" => format!("{}", bar.yellow()),
+        "red" => format!("{}", bar.red()),
+        _ => bar,
+    }
+}
+
+fn print_recommended_values(results: &[CheckResult]) {
     let fixes: Vec<_> = results.iter().filter_map(|r| r.fix.as_ref()).collect();
     if fixes.is_empty() {
         return;
@@ -65,18 +206,16 @@ fn print_recommended_values(results: &[CheckResult], _use_color: bool) {
         by_file.entry(&fix.file).or_default().push(&fix.content);
     }
 
+    println!("  {}", "Recommended Changes".bold().underline());
     println!();
-    println!("{}", "═══ Recommended Values Summary ═══".bold());
 
     for (file, values) in &by_file {
-        println!();
-        println!("{}:", file.bold().underline());
+        println!("    {}", file.bold());
         for val in values {
-            println!("  {val}");
+            println!("      {}", val.cyan());
         }
+        println!();
     }
-
-    println!();
 }
 
 fn print_json(results: &[CheckResult]) {
