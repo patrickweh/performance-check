@@ -1,3 +1,4 @@
+use crate::supervisor::OctanePorts;
 use crate::types::{CheckResult, SystemContext};
 use std::fs;
 use std::path::Path;
@@ -12,7 +13,7 @@ struct AdminApiConfig {
     reachable: bool,
 }
 
-pub fn check(frankenphp_bin: &str, app_path: &str, ctx: &SystemContext) -> Vec<CheckResult> {
+pub fn check(frankenphp_bin: &str, app_path: &str, ctx: &SystemContext, octane_ports: &OctanePorts) -> Vec<CheckResult> {
     let mut results = Vec::new();
 
     // Binary exists and is executable
@@ -56,7 +57,7 @@ pub fn check(frankenphp_bin: &str, app_path: &str, ctx: &SystemContext) -> Vec<C
         .map(|content| parse_site_config(&content, app_path));
 
     // Query the Caddy admin API for runtime configuration (most reliable for Octane)
-    let admin_config = query_admin_api();
+    let admin_config = query_admin_api(octane_ports);
 
     // Worker Mode check
     check_worker_mode(&site_config, &admin_config, &mut results);
@@ -146,11 +147,20 @@ fn find_caddyfile_from_process() -> Option<String> {
 ///
 /// This is the most reliable detection method for Octane/Forge setups
 /// where the Caddyfile is generated dynamically and not on disk.
-fn query_admin_api() -> AdminApiConfig {
+fn query_admin_api(octane_ports: &OctanePorts) -> AdminApiConfig {
     let mut config = AdminApiConfig::default();
 
-    // Try common admin ports (2019 is Caddy default, Octane uses configurable admin port)
-    let ports = [2019, 2020];
+    // Build port list: supervisor-detected admin port first, then common defaults
+    let mut ports = Vec::with_capacity(3);
+    if let Some(p) = octane_ports.admin_port {
+        ports.push(p);
+    }
+    // Always try common defaults as fallback
+    for default in [2019, 2020] {
+        if !ports.contains(&default) {
+            ports.push(default);
+        }
+    }
 
     for port in ports {
         let output = Command::new("curl")

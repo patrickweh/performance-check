@@ -1,3 +1,4 @@
+use crate::supervisor::OctanePorts;
 use crate::types::SystemContext;
 use colored::Colorize;
 use std::net::TcpStream;
@@ -104,7 +105,7 @@ impl BenchmarkResult {
 }
 
 /// Run all available benchmarks standalone (--bench flag).
-pub fn run_all(frankenphp_bin: &str, app_path: &str, ctx: &SystemContext) {
+pub fn run_all(frankenphp_bin: &str, app_path: &str, ctx: &SystemContext, octane_ports: &OctanePorts) {
     println!();
     println!("  {}", "Benchmarks".bold().underline());
     println!();
@@ -136,7 +137,7 @@ pub fn run_all(frankenphp_bin: &str, app_path: &str, ctx: &SystemContext) {
         "Detecting FrankenPHP server...".dimmed()
     );
 
-    match detect_http_port() {
+    match detect_http_port(octane_ports) {
         Some((host, port, is_https)) => {
             let scheme = if is_https { "https" } else { "http" };
             println!(
@@ -170,8 +171,10 @@ pub fn run_all(frankenphp_bin: &str, app_path: &str, ctx: &SystemContext) {
         None => {
             println!(
                 "      {}",
-                "No running FrankenPHP server detected (tried ports 443, 8000, 8443, 80)"
-                    .yellow()
+                format!(
+                    "No running FrankenPHP server detected (tried ports {}443, 8000, 8443, 80)",
+                    octane_ports.http_port.map(|p| format!("{p}, ")).unwrap_or_default()
+                ).yellow()
             );
         }
     }
@@ -410,24 +413,42 @@ fn php_eval_float(frankenphp_bin: &str, code: &str) -> Option<f64> {
 }
 
 /// Detect the port FrankenPHP is listening on.
-/// Tries common ports and checks for HTTP response.
-fn detect_http_port() -> Option<(String, u16, bool)> {
-    // Check admin API first for server name / listen address
-    if let Some(port) = detect_port_from_admin_api() {
-        return Some(("127.0.0.1".to_string(), port, port == 443 || port == 8443));
-    }
+/// Tries supervisor-detected port first, then admin API, then common ports.
+fn detect_http_port(octane_ports: &OctanePorts) -> Option<(String, u16, bool)> {
+    let host = octane_ports
+        .host
+        .as_deref()
+        .unwrap_or("127.0.0.1");
 
-    // Try common ports
-    let candidates = [(443, true), (8000, false), (8443, true), (80, false)];
-
-    for (port, is_https) in candidates {
+    // If supervisor config specifies the HTTP port, try it first
+    if let Some(port) = octane_ports.http_port {
+        let is_https = port == 443 || port == 8443;
         if TcpStream::connect_timeout(
-            &format!("127.0.0.1:{port}").parse().unwrap(),
+            &format!("{host}:{port}").parse().unwrap(),
             Duration::from_millis(200),
         )
         .is_ok()
         {
-            return Some(("127.0.0.1".to_string(), port, is_https));
+            return Some((host.to_string(), port, is_https));
+        }
+    }
+
+    // Check admin API for server listen address
+    if let Some(port) = detect_port_from_admin_api(octane_ports) {
+        return Some((host.to_string(), port, port == 443 || port == 8443));
+    }
+
+    // Try common ports as fallback
+    let candidates = [(443, true), (8000, false), (8443, true), (80, false)];
+
+    for (port, is_https) in candidates {
+        if TcpStream::connect_timeout(
+            &format!("{host}:{port}").parse().unwrap(),
+            Duration::from_millis(200),
+        )
+        .is_ok()
+        {
+            return Some((host.to_string(), port, is_https));
         }
     }
 
@@ -435,35 +456,51 @@ fn detect_http_port() -> Option<(String, u16, bool)> {
 }
 
 /// Try to detect the HTTP port from the Caddy admin API.
-fn detect_port_from_admin_api() -> Option<u16> {
-    let output = Command::new("curl")
-        .args([
-            "-s",
-            "--connect-timeout",
-            "1",
-            "--max-time",
-            "2",
-            "http://localhost:2019/config/apps/http/servers",
-        ])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
+fn detect_port_from_admin_api(octane_ports: &OctanePorts) -> Option<u16> {
+    // Build admin port list: supervisor-detected first, then defaults
+    let mut admin_ports = Vec::with_capacity(3);
+    if let Some(p) = octane_ports.admin_port {
+        admin_ports.push(p);
+    }
+    for default in [2019u16, 2020] {
+        if !admin_ports.contains(&default) {
+            admin_ports.push(default);
+        }
     }
 
-    let body = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&body).ok()?;
+    for admin_port in admin_ports {
+        let output = Command::new("curl")
+            .args([
+                "-s",
+                "--connect-timeout",
+                "1",
+                "--max-time",
+                "2",
+                &format!("http://localhost:{admin_port}/config/apps/http/servers"),
+            ])
+            .output()
+            .ok()?;
 
-    // Look for listen addresses in any server
-    for (_name, server) in json.as_object()? {
-        if let Some(listen) = server.get("listen").and_then(|l| l.as_array()) {
-            for addr in listen {
-                if let Some(addr_str) = addr.as_str() {
-                    // Format is typically ":443" or ":8000"
-                    if let Some(port_str) = addr_str.strip_prefix(':') {
-                        if let Ok(port) = port_str.parse::<u16>() {
-                            return Some(port);
+        if !output.status.success() {
+            continue;
+        }
+
+        let body = String::from_utf8_lossy(&output.stdout);
+        let json: serde_json::Value = match serde_json::from_str(&body) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        // Look for listen addresses in any server
+        for (_name, server) in json.as_object()? {
+            if let Some(listen) = server.get("listen").and_then(|l| l.as_array()) {
+                for addr in listen {
+                    if let Some(addr_str) = addr.as_str() {
+                        // Format is typically ":443" or ":8000"
+                        if let Some(port_str) = addr_str.strip_prefix(':') {
+                            if let Ok(port) = port_str.parse::<u16>() {
+                                return Some(port);
+                            }
                         }
                     }
                 }

@@ -3,6 +3,7 @@ mod checks;
 mod discover;
 mod fixes;
 mod output;
+mod supervisor;
 mod types;
 
 use clap::Parser;
@@ -79,6 +80,9 @@ fn main() {
 
         let mut all_results = Vec::new();
 
+        // 0. Detect Octane ports from supervisor/process (used by FrankenPHP + benchmark)
+        let octane_ports = supervisor::detect_octane_ports(app_path);
+
         // 1. System context (foundation for all other checks)
         let (ctx, system_results) = checks::system::gather(app_path);
         all_results.extend(system_results);
@@ -87,7 +91,7 @@ fn main() {
         all_results.extend(checks::libc::check());
 
         // 3. FrankenPHP binary + Caddyfile checks
-        all_results.extend(checks::frankenphp::check(&cli.frankenphp, app_path, &ctx));
+        all_results.extend(checks::frankenphp::check(&cli.frankenphp, app_path, &ctx, &octane_ports));
 
         // 4. PHP-ZTS, OPcache, Realpath
         all_results.extend(checks::php::check(&cli.frankenphp, &cli.php_ini, &ctx));
@@ -113,7 +117,7 @@ fn main() {
                 fixes::propose_full_benchmark_fixes(&all_results, &cli.frankenphp, app_path, &ctx);
             } else if cli.bench {
                 // Standalone benchmarks only
-                benchmark::run_all(&cli.frankenphp, app_path, &ctx);
+                benchmark::run_all(&cli.frankenphp, app_path, &ctx, &octane_ports);
             } else if cli.fix {
                 // Interactive per-fix mode
                 fixes::propose_interactive_fixes(&all_results, &cli.frankenphp, app_path);
