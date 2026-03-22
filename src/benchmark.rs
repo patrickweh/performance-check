@@ -528,54 +528,74 @@ fn run_http_load_test(
     concurrency: u32,
 ) -> Option<BenchmarkResult> {
     let scheme = if is_https { "https" } else { "http" };
-    let url = format!("{scheme}://{host}:{port}/up");
 
-    // Warm up: single request to ensure we get a valid response
-    let warmup = Command::new("curl")
-        .args([
-            "-sk",
-            "--connect-timeout",
-            "3",
-            "--max-time",
-            "5",
-            "-o",
-            "/dev/null",
-            "-w",
-            "%{http_code}",
-            &url,
-        ])
-        .output()
-        .ok()?;
+    // Try multiple endpoints: /up (Laravel health), / (root)
+    // Also try both with and without -L (follow redirects)
+    let candidates = [
+        format!("{scheme}://{host}:{port}/up"),
+        format!("{scheme}://{host}:{port}/"),
+    ];
 
-    let status = String::from_utf8_lossy(&warmup.stdout).trim().to_string();
-    if !warmup.status.success() || (!status.starts_with('2') && !status.starts_with('3')) {
-        // Try root path instead
-        let url_root = format!("{scheme}://{host}:{port}/");
-        let warmup2 = Command::new("curl")
-            .args([
-                "-sk",
-                "--connect-timeout",
-                "3",
-                "--max-time",
-                "5",
-                "-o",
-                "/dev/null",
-                "-w",
-                "%{http_code}",
-                &url_root,
-            ])
-            .output()
-            .ok()?;
-
-        let status2 = String::from_utf8_lossy(&warmup2.stdout).trim().to_string();
-        if !warmup2.status.success() || (!status2.starts_with('2') && !status2.starts_with('3')) {
-            return None;
+    for url in &candidates {
+        // First try without following redirects
+        if let Some(status) = curl_status_code(url, false) {
+            if status.starts_with('2') || status.starts_with('3') {
+                return run_http_load_test_inner(url, total_requests, concurrency);
+            }
         }
-
-        return run_http_load_test_inner(&url_root, total_requests, concurrency);
+        // Then try following redirects (e.g. HTTP → HTTPS redirect)
+        if let Some(status) = curl_status_code(url, true) {
+            if status.starts_with('2') {
+                return run_http_load_test_inner(url, total_requests, concurrency);
+            }
+        }
     }
 
-    run_http_load_test_inner(&url, total_requests, concurrency)
+    // Last resort: try HTTPS on the same port (Caddy often auto-redirects HTTP → HTTPS)
+    if !is_https {
+        let https_candidates = [
+            format!("https://{host}:{port}/up"),
+            format!("https://{host}:{port}/"),
+        ];
+        for url in &https_candidates {
+            if let Some(status) = curl_status_code(url, false) {
+                if status.starts_with('2') || status.starts_with('3') {
+                    return run_http_load_test_inner(url, total_requests, concurrency);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Probe a URL with curl and return the HTTP status code.
+fn curl_status_code(url: &str, follow_redirects: bool) -> Option<String> {
+    let mut args = vec![
+        "-sk",
+        "--connect-timeout",
+        "3",
+        "--max-time",
+        "5",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}",
+    ];
+    if follow_redirects {
+        args.push("-L");
+    }
+    args.push(url);
+
+    let output = Command::new("curl").args(&args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if status == "000" {
+        return None;
+    }
+    Some(status)
 }
 
 fn run_http_load_test_inner(
@@ -603,7 +623,7 @@ fn run_http_load_test_inner(
                     let req_start = Instant::now();
                     let result = Command::new("curl")
                         .args([
-                            "-sk",
+                            "-skL",
                             "--connect-timeout",
                             "3",
                             "--max-time",
@@ -744,8 +764,42 @@ fn get_num_threads(admin_port: u16) -> Option<u32> {
 }
 
 /// Set num_threads via the Caddy admin API (takes effect immediately).
+///
+/// Tries PATCH on the parent object first (works when num_threads key doesn't exist yet),
+/// then falls back to POST on the specific path (works when key already exists).
 fn set_num_threads(admin_port: u16, value: u32) -> bool {
-    Command::new("curl")
+    // PATCH merges into the frankenphp object — works even if num_threads doesn't exist yet
+    let patch_body = format!("{{\"num_threads\":{value}}}");
+    let output = Command::new("curl")
+        .args([
+            "-s",
+            "-X",
+            "PATCH",
+            "--connect-timeout",
+            "2",
+            "--max-time",
+            "3",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            &patch_body,
+            &format!("http://localhost:{admin_port}/config/apps/frankenphp"),
+        ])
+        .output();
+
+    if let Ok(ref o) = output {
+        if o.status.success() {
+            // Verify it took effect
+            if let Some(actual) = get_num_threads(admin_port) {
+                if actual == value {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Fallback: POST directly (works when the key already exists)
+    let output = Command::new("curl")
         .args([
             "-s",
             "-X",
@@ -760,9 +814,17 @@ fn set_num_threads(admin_port: u16, value: u32) -> bool {
             &value.to_string(),
             &format!("http://localhost:{admin_port}/config/apps/frankenphp/num_threads"),
         ])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .output();
+
+    if let Ok(ref o) = output {
+        if o.status.success() {
+            if let Some(actual) = get_num_threads(admin_port) {
+                return actual == value;
+            }
+        }
+    }
+
+    false
 }
 
 /// Delete num_threads from admin API config (restores built-in default).
