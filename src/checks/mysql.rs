@@ -19,7 +19,7 @@ pub fn check(ctx: &SystemContext) -> Vec<CheckResult> {
     } else {
         results.push(CheckResult::warn(
             "MySQL Config",
-            "No custom .cnf found in /etc/mysql/conf.d/ — fixes will create a new file",
+            "No .cnf with [mysqld] found — fixes will create /etc/mysql/conf.d/custom.cnf",
         ));
     }
 
@@ -163,8 +163,21 @@ pub fn check(ctx: &SystemContext) -> Vec<CheckResult> {
 
 /// Auto-detect MySQL config file in /etc/mysql/conf.d/.
 fn detect_mysql_cnf() -> Option<String> {
+    // Prefer /etc/mysql/my.cnf if it contains a [mysqld] section
+    // (this is the main config file on most Debian/Ubuntu setups)
+    let my_cnf = "/etc/mysql/my.cnf";
+    if let Ok(content) = fs::read_to_string(my_cnf) {
+        if content.contains("[mysqld]") {
+            return Some(my_cnf.to_string());
+        }
+    }
+
+    // Fall back to files in /etc/mysql/conf.d/
     let conf_dir = "/etc/mysql/conf.d";
-    let entries = fs::read_dir(conf_dir).ok()?;
+    let entries = match fs::read_dir(conf_dir) {
+        Ok(e) => e,
+        Err(_) => return None,
+    };
 
     let mut cnf_files: Vec<String> = entries
         .flatten()
@@ -179,15 +192,7 @@ fn detect_mysql_cnf() -> Option<String> {
         .collect();
 
     cnf_files.sort();
-
-    match cnf_files.len() {
-        0 => None,
-        1 => Some(cnf_files.into_iter().next().unwrap()),
-        _ => {
-            // Multiple files — let the user know which one we picked
-            Some(cnf_files.into_iter().next().unwrap())
-        }
-    }
+    cnf_files.into_iter().next()
 }
 
 fn mysql_query(query: &str) -> Option<String> {
