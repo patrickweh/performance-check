@@ -136,11 +136,24 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Move latest tag to current commit
+        run: |
+          git tag -f latest HEAD
+          git push -f origin latest
+
+      - name: Delete existing latest release
+        run: |
+          gh release delete latest --yes 2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
 
-      - name: Update latest release
+      - name: Create latest release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
@@ -149,6 +162,7 @@ jobs:
             Rolling release — automatically updated on every merge to main.
             Last updated from commit ${{ github.sha }}.
           prerelease: true
+          make_latest: false
           files: |
             frankenphp-check-linux-amd64/frankenphp-check-linux-amd64
             frankenphp-check-linux-arm64/frankenphp-check-linux-arm64
